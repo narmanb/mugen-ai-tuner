@@ -5,10 +5,10 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.narmanb.mugenaituner.core.CharacterFingerprint
 import com.narmanb.mugenaituner.core.CharacterFingerprinter
+import com.narmanb.mugenaituner.core.CharacterHealthValidator
 import com.narmanb.mugenaituner.core.FileMutation
 import com.narmanb.mugenaituner.core.MaterializedEditPlan
 import com.narmanb.mugenaituner.core.SourceFile
-import com.narmanb.mugenaituner.core.SourceGraphResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.charset.Charset
@@ -30,11 +30,13 @@ private data class WritableTarget(
 
 /**
  * Performs a character edit as a guarded transaction:
- * 1. re-read the active DEF source graph and reject outside changes;
- * 2. verify every target file still exactly matches the analyzed text;
- * 3. save exact original bytes in a versioned backup;
- * 4. write and verify every changed file;
- * 5. roll all touched files back if any write or verification fails.
+ * 1. re-read the active character source graph and reject outside changes;
+ * 2. run before/after structural health validation;
+ * 3. verify every target file still exactly matches the analyzed text;
+ * 4. save exact original bytes in a versioned backup;
+ * 5. write and verify every changed file;
+ * 6. verify the complete post-write fingerprint;
+ * 7. roll all touched files back if any write or verification fails.
  */
 internal object CharacterEditTransaction {
     suspend fun apply(
@@ -50,14 +52,12 @@ internal object CharacterEditTransaction {
             "The edit plan is not safe to apply. Resolve ambiguous proposed changes first."
         }
 
-        val freshAllFiles = CharacterFolderReader.read(context, treeUri)
-        val freshFiles = SourceGraphResolver.resolve(freshAllFiles).reachableFiles
+        val freshFiles = CharacterFolderReader.read(context, treeUri)
         val freshFingerprint = CharacterFingerprinter.fingerprint(freshFiles)
         check(!analyzedFingerprint.differsFrom(freshFingerprint)) {
             "Character files changed after analysis. Re-analyze before applying any edits."
         }
 
-        // Also make sure the supplied analysis snapshot itself is the one fingerprinted above.
         check(!analyzedFingerprint.differsFrom(CharacterFingerprinter.fingerprint(analyzedFiles))) {
             "The in-memory analysis snapshot no longer matches its fingerprint."
         }
@@ -67,6 +67,17 @@ internal object CharacterEditTransaction {
             mutationByPath[file.path]?.let { mutation -> file.copy(content = mutation.afterContent) } ?: file
         }
         val resultingFingerprint = CharacterFingerprinter.fingerprint(resultingFiles)
+
+        val beforeHealth = CharacterHealthValidator.validate(freshFiles)
+        val afterHealth = CharacterHealthValidator.validate(resultingFiles)
+        val introducedErrors = CharacterHealthValidator.introducedErrors(beforeHealth, afterHealth)
+        check(introducedErrors.isEmpty()) {
+            val summary = introducedErrors.take(3).joinToString("; ") { issue ->
+                val location = issue.lineNumber?.let { ":$it" }.orEmpty()
+                "${issue.filePath}$location: ${issue.message}"
+            }
+            "Pre-write health check found a structural error introduced by the proposed edit. Nothing was changed. $summary"
+        }
 
         val root = DocumentFile.fromTreeUri(context, treeUri)
             ?: error("Android could not reopen the selected character folder.")
@@ -121,6 +132,17 @@ internal object CharacterEditTransaction {
                     "Verification failed after writing '${target.mutation.relativePath}'."
                 }
             }
+
+            val postWriteFiles = CharacterFolderReader.read(context, treeUri)
+            val postWriteFingerprint = CharacterFingerprinter.fingerprint(postWriteFiles)
+            check(!postWriteFingerprint.differsFrom(resultingFingerprint)) {
+                "The complete character fingerprint did not match the planned result after writing. The transaction was rolled back."
+            }
+            val postWriteHealth = CharacterHealthValidator.validate(postWriteFiles)
+            check(CharacterHealthValidator.introducedErrors(beforeHealth, postWriteHealth).isEmpty()) {
+                "Post-write health verification found a newly introduced structural error. The transaction was rolled back."
+            }
+
             BackupStore.markStatus(context, prepared, "applied")
         } catch (throwable: Throwable) {
             transactionFailure = throwable
