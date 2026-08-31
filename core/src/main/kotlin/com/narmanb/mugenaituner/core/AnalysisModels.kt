@@ -33,11 +33,23 @@ enum class DifficultyResponsiveness {
     UNKNOWN,
 }
 
+enum class VariableKind {
+    VAR,
+    FVAR,
+}
+
 data class AiFlag(
     val variable: Int,
     val confidence: Confidence,
     val reason: String,
-)
+    val kind: VariableKind = VariableKind.VAR,
+) {
+    val expressionName: String
+        get() = when (kind) {
+            VariableKind.VAR -> "var($variable)"
+            VariableKind.FVAR -> "fvar($variable)"
+        }
+}
 
 data class AiBehavior(
     val category: BehaviorCategory,
