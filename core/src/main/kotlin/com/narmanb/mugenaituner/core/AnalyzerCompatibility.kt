@@ -17,7 +17,23 @@ data class AnalyzerCompatibility(
 
 object AnalyzerCompatibilityEstimator {
     fun estimate(analysis: CharacterAnalysis): AnalyzerCompatibility {
+        val unresolved = analysis.unresolvedSourceReferences.distinct()
         if (!analysis.aiDetected) {
+            if (unresolved.isNotEmpty()) {
+                return AnalyzerCompatibility(
+                    understandingScore = 0,
+                    label = "Incomplete source graph",
+                    highConfidenceBehaviors = 0,
+                    mediumConfidenceBehaviors = 0,
+                    uncertainBehaviors = 0,
+                    safeEditCandidateCount = 0,
+                    behaviorCount = 0,
+                    notes = buildList {
+                        add("Custom AI cannot be ruled out because ${unresolved.size} referenced character-code file(s) could not be resolved.")
+                        unresolved.take(4).forEach { add("Missing reference: $it") }
+                    },
+                )
+            }
             return AnalyzerCompatibility(
                 understandingScore = null,
                 label = "No custom AI detected",
@@ -52,13 +68,18 @@ object AnalyzerCompatibilityEstimator {
         if (totalUnits == 0) {
             return AnalyzerCompatibility(
                 understandingScore = 0,
-                label = "Unsupported/unknown",
+                label = if (unresolved.isEmpty()) "Unsupported/unknown" else "Incomplete source graph",
                 highConfidenceBehaviors = 0,
                 mediumConfidenceBehaviors = 0,
                 uncertainBehaviors = 0,
                 safeEditCandidateCount = 0,
                 behaviorCount = 0,
-                notes = listOf("AI activation was detected, but no AI behavior or configuration units could be traced confidently."),
+                notes = buildList {
+                    add("AI activation was detected, but no AI behavior or configuration units could be traced confidently.")
+                    if (unresolved.isNotEmpty()) {
+                        add("${unresolved.size} referenced character-code file(s) could not be resolved, so analysis is incomplete.")
+                    }
+                },
             )
         }
 
@@ -66,9 +87,11 @@ object AnalyzerCompatibilityEstimator {
             highBehaviors + highParameters +
                 (mediumBehaviors + mediumParameters) * 0.6 +
                 (uncertainBehaviors + uncertainParameters) * 0.15
-        val score = (weightedUnits / totalUnits.toDouble() * 100.0)
+        val baseScore = (weightedUnits / totalUnits.toDouble() * 100.0)
             .roundToInt()
             .coerceIn(0, 100)
+        val sourcePenalty = (unresolved.size * 12).coerceAtMost(35)
+        val score = (baseScore - sourcePenalty).coerceIn(0, 100)
 
         // Count locations for which the conservative planner can produce at least one
         // normal-difficulty edit. This is deliberately reported separately from understanding:
@@ -86,11 +109,12 @@ object AnalyzerCompatibilityEstimator {
 
         return AnalyzerCompatibility(
             understandingScore = score,
-            label = when (score) {
-                in 85..100 -> "High compatibility"
-                in 65..84 -> "Good compatibility"
-                in 40..64 -> "Partial compatibility"
-                in 1..39 -> "Low compatibility"
+            label = when {
+                unresolved.isNotEmpty() && score < 65 -> "Incomplete/partial compatibility"
+                score in 85..100 -> "High compatibility"
+                score in 65..84 -> "Good compatibility"
+                score in 40..64 -> "Partial compatibility"
+                score in 1..39 -> "Low compatibility"
                 else -> "Unsupported/unknown"
             },
             highConfidenceBehaviors = highBehaviors,
@@ -102,6 +126,10 @@ object AnalyzerCompatibilityEstimator {
             safeConfigurationParameters = safeParameters,
             notes = buildList {
                 add("Compatibility measures analyzer confidence, not how strong the AI is.")
+                if (unresolved.isNotEmpty()) {
+                    add("Compatibility was reduced because ${unresolved.size} referenced character-code file(s) could not be resolved.")
+                    unresolved.take(4).forEach { add("Missing reference: $it") }
+                }
                 if (parameters.isNotEmpty()) {
                     add("${highParameters + mediumParameters}/${parameters.size} author-exposed AI configuration setting(s) were understood; $safeParameters passed the stricter automatic-edit check.")
                 }
