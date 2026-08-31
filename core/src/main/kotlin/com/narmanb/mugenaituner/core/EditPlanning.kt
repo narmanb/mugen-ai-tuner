@@ -23,10 +23,6 @@ data class EditPlan(
 }
 
 object AiEditPlanner {
-    private val numericAiLevelScalingRegex = Regex(
-        """(?i)(random[^\n]*ailevel|ailevel[^\n]*random|ailevel\s*[+\-*/]|[+\-*/]\s*ailevel|ailevel\s*(?:>=|>|==|=|<=|<)\s*[1-8]\b)""",
-    )
-
     fun plan(analysis: CharacterAnalysis, profile: SkillProfile): EditPlan =
         plan(analysis, profile, engineDifficultyScaling = false)
 
@@ -77,9 +73,10 @@ object AiEditPlanner {
                 return@forEach
             }
 
-            if (numericAiLevelScalingRegex.containsMatchIn(behavior.rawCode)) {
+            if (AiLevelDifficultyScaling.hasNumericScaling(behavior.rawCode)) {
                 // Already difficulty-scaled code needs a dedicated rewrite strategy so we do not
-                // accidentally apply scaling twice.
+                // accidentally apply scaling twice. Pure AI on/off gates such as AILevel >= 1 do
+                // not count here and therefore do not block otherwise safe probability tuning.
                 skipped++
                 return@forEach
             }
