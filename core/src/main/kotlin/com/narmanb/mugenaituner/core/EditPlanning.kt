@@ -33,6 +33,8 @@ object AiEditPlanner {
     /**
      * Builds a conservative standardized edit plan. Only high-confidence AI blocks with Random
      * probability forms that map cleanly to one activation chance are automatically writable.
+     * Verified author-exposed AI configuration parameters can also contribute edits through the
+     * exact same preview/backup/verification pipeline.
      *
      * The selected 0–100 skill is mapped onto shared category-specific probability curves. This
      * means 50% aims for the app's common Normal target instead of multiplying whatever arbitrary
@@ -130,6 +132,15 @@ object AiEditPlanner {
             if (!producedEdit) skipped++
         }
 
+        val configurationEdits = AiConfigurationTuning.plan(
+            parameters = analysis.configurationParameters,
+            profile = normalized,
+        )
+        edits += configurationEdits
+
+        val detectedConfigurationCount = analysis.configurationParameters.size
+        val editableConfigurationCount = analysis.configurationParameters.count { it.safeToEdit }
+
         return EditPlan(
             profile = normalized,
             edits = edits.distinctBy { Triple(it.filePath, it.sourceLine, it.originalExpression) },
@@ -139,12 +150,18 @@ object AiEditPlanner {
                 if (rangeScalingSkipped > 0) {
                     add("$rangeScalingSkipped range-style Random decision(s) were left fixed because automatic AILevel conversion for dynamic range bounds is intentionally disabled.")
                 }
-                if (edits.isEmpty() && analysis.aiDetected) add("AI was detected, but no high-confidence simple probability edits are currently safe to apply automatically.")
+                if (detectedConfigurationCount > 0) {
+                    add("Detected $detectedConfigurationCount author-exposed AI configuration setting(s); $editableConfigurationCount passed the strict automatic-edit safety check.")
+                }
+                if (configurationEdits.isNotEmpty() && engineDifficultyScaling) {
+                    add("Verified packed AI settings are set to the selected target level and remain fixed across AILevel values; only safely convertible probability decisions receive dynamic AILevel scaling.")
+                }
+                if (edits.isEmpty() && analysis.aiDetected) add("AI was detected, but no high-confidence simple probability or verified configuration edits are currently safe to apply automatically.")
                 if (edits.isNotEmpty()) {
                     add("The 0–100 scale is standardized: 50% targets a shared Normal behavior level rather than half of the author's original probability.")
                 }
                 if (engineDifficultyScaling && edits.isNotEmpty()) {
-                    add("IKEMEN/MUGEN AILevel scaling is enabled: AILevel 1 starts below the selected target, AILevel 4 matches it, and AILevel 8 reaches the standardized Expert/100 target.")
+                    add("IKEMEN/MUGEN AILevel scaling is enabled: AILevel 1 starts below the selected target, AILevel 4 matches it, and AILevel 8 reaches the standardized Expert/100 target where a safe dynamic conversion is available.")
                 }
                 add("This plan is a preview. File writes and backups are handled separately so analysis never modifies a character by itself.")
             },
