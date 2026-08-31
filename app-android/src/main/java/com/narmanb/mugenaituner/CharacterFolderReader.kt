@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.narmanb.mugenaituner.core.SourceFile
+import com.narmanb.mugenaituner.core.SourceGraphResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -45,6 +46,6 @@ object CharacterFolderReader {
         }
 
         visit(root, "")
-        files
+        SourceGraphResolver.resolve(files).reachableFiles
     }
 }
