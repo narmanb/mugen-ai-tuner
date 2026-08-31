@@ -1,5 +1,7 @@
 package com.narmanb.mugenaituner.core
 
+import kotlin.math.abs
+
 data class PlannedEdit(
     val category: BehaviorCategory,
     val filePath: String,
@@ -21,7 +23,6 @@ data class EditPlan(
 }
 
 object AiEditPlanner {
-    private val simpleRandomRegex = Regex("""(?i)\brandom\s*(<=|>=|<|>)\s*(1000|\d{1,3})\b""")
     private val numericAiLevelScalingRegex = Regex(
         """(?i)(random[^\n]*ailevel|ailevel[^\n]*random|ailevel\s*[+\-*/]|[+\-*/]\s*ailevel|ailevel\s*(?:>=|>|==|=|<=|<)\s*[1-8]\b)""",
     )
@@ -30,8 +31,8 @@ object AiEditPlanner {
         plan(analysis, profile, engineDifficultyScaling = false)
 
     /**
-     * Builds a conservative standardized edit plan. Only high-confidence AI blocks with simple
-     * Random comparisons are considered automatically writable.
+     * Builds a conservative standardized edit plan. Only high-confidence AI blocks with Random
+     * probability forms that map cleanly to one activation chance are automatically writable.
      *
      * The selected 0–100 skill is mapped onto shared category-specific probability curves. This
      * means 50% aims for the app's common Normal target instead of multiplying whatever arbitrary
@@ -41,6 +42,8 @@ object AiEditPlanner {
      * When [engineDifficultyScaling] is enabled, AILevel 1 starts at one quarter of the selected
      * standardized skill, AILevel 4 equals the selected skill, and AILevel 8 reaches the app's
      * standardized Expert/100 target. Existing numeric AILevel formulas remain untouched.
+     * Inclusive Random ranges are tunable for fixed presets/custom settings but are left unchanged
+     * by AILevel conversion until dynamic range-bound portability is verified across engines.
      */
     fun plan(
         analysis: CharacterAnalysis,
@@ -50,6 +53,7 @@ object AiEditPlanner {
         val normalized = profile.normalized()
         val edits = mutableListOf<PlannedEdit>()
         var skipped = 0
+        var rangeScalingSkipped = 0
 
         analysis.behaviors.forEach { behavior ->
             if (behavior.confidence != Confidence.HIGH || behavior.category == BehaviorCategory.UNKNOWN) {
@@ -64,8 +68,8 @@ object AiEditPlanner {
                 return@forEach
             }
 
-            val matches = simpleRandomRegex.findAll(behavior.rawCode).toList()
-            if (matches.isEmpty()) {
+            val decisions = RandomProbabilityParser.findAll(behavior.rawCode)
+            if (decisions.isEmpty()) {
                 skipped++
                 return@forEach
             }
@@ -73,46 +77,45 @@ object AiEditPlanner {
             val skill = normalized.skillFor(behavior.category)
             var producedEdit = false
 
-            matches.forEach matchLoop@{ match ->
-                val operator = match.groupValues[1]
-                val original = match.groupValues[2].toIntOrNull() ?: return@matchLoop
-                val centerThreshold = StandardizedAiCalibration.standardizedThreshold(
+            decisions.forEach decisionLoop@{ decision ->
+                val centerChance = StandardizedAiCalibration.standardizedChance(
                     category = behavior.category,
                     skill = skill,
-                    operator = operator,
-                    originalThreshold = original,
-                ) ?: return@matchLoop
+                    originalChance = decision.activationChance,
+                ) ?: return@decisionLoop
 
                 val replacementExpression = if (engineDifficultyScaling) {
-                    val lowThreshold = StandardizedAiCalibration.standardizedThreshold(
+                    if (decision.form != RandomProbabilityForm.COMPARISON) {
+                        rangeScalingSkipped++
+                        return@decisionLoop
+                    }
+                    val operator = decision.comparisonOperator ?: return@decisionLoop
+                    val lowChance = StandardizedAiCalibration.standardizedChance(
                         category = behavior.category,
                         skill = StandardizedAiCalibration.lowEngineSkill(skill),
-                        operator = operator,
-                        originalThreshold = original,
-                    ) ?: return@matchLoop
-                    val highThreshold = StandardizedAiCalibration.standardizedThreshold(
+                        originalChance = decision.activationChance,
+                    ) ?: return@decisionLoop
+                    val highChance = StandardizedAiCalibration.standardizedChance(
                         category = behavior.category,
                         skill = 100,
-                        operator = operator,
-                        originalThreshold = original,
-                    ) ?: return@matchLoop
+                        originalChance = decision.activationChance,
+                    ) ?: return@decisionLoop
                     engineScaledExpression(
                         operator = operator,
-                        lowThreshold = lowThreshold,
-                        centerThreshold = centerThreshold,
-                        highThreshold = highThreshold,
+                        lowThreshold = StandardizedAiCalibration.thresholdForChance(operator, lowChance),
+                        centerThreshold = StandardizedAiCalibration.thresholdForChance(operator, centerChance),
+                        highThreshold = StandardizedAiCalibration.thresholdForChance(operator, highChance),
                     )
                 } else {
-                    "Random $operator $centerThreshold"
+                    if (abs(centerChance - decision.activationChance) < 0.0005) return@decisionLoop
+                    decision.replacementForChance(centerChance)
                 }
-
-                if (!engineDifficultyScaling && centerThreshold == original) return@matchLoop
 
                 edits += PlannedEdit(
                     category = behavior.category,
                     filePath = behavior.filePath,
                     sourceLine = behavior.lineNumber,
-                    originalExpression = match.value,
+                    originalExpression = decision.expression,
                     replacementExpression = replacementExpression,
                     confidence = behavior.confidence,
                     reason = if (engineDifficultyScaling) {
@@ -133,6 +136,9 @@ object AiEditPlanner {
             skippedBehaviorCount = skipped,
             notes = buildList {
                 if (skipped > 0) add("$skipped analyzed AI behavior block(s) were left unchanged because their rewrite was not yet considered safe enough.")
+                if (rangeScalingSkipped > 0) {
+                    add("$rangeScalingSkipped range-style Random decision(s) were left fixed because automatic AILevel conversion for dynamic range bounds is intentionally disabled.")
+                }
                 if (edits.isEmpty() && analysis.aiDetected) add("AI was detected, but no high-confidence simple probability edits are currently safe to apply automatically.")
                 if (edits.isNotEmpty()) {
                     add("The 0–100 scale is standardized: 50% targets a shared Normal behavior level rather than half of the author's original probability.")
