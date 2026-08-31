@@ -3,6 +3,7 @@ package com.narmanb.mugenaituner
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import com.narmanb.mugenaituner.core.CharacterCodeFileTypes
 import com.narmanb.mugenaituner.core.SourceFile
 import com.narmanb.mugenaituner.core.SourceGraphResolver
 import kotlinx.coroutines.Dispatchers
@@ -22,7 +23,7 @@ data class CharacterFolderReadResult(
 )
 
 object CharacterFolderReader {
-    private val supportedExtensions = setOf("def", "cmd", "cns", "st", "states", "zss")
+    private val supportedExtensions = CharacterCodeFileTypes.supportedExtensions
     private const val maxFiles = 400
     private const val maxTextFileBytes = 4L * 1024L * 1024L
 
