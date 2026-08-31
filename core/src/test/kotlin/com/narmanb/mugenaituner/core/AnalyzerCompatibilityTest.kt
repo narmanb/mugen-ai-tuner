@@ -30,8 +30,8 @@ class AnalyzerCompatibilityTest {
         )
 
         val result = AnalyzerCompatibilityEstimator.estimate(analysis)
-        assertNotNull(result.understandingScore)
-        assertTrue(result.understandingScore >= 85)
+        val score = assertNotNull(result.understandingScore)
+        assertTrue(score >= 85)
         assertEquals(5, result.highConfidenceBehaviors)
     }
 
