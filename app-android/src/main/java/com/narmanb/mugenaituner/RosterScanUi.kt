@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.narmanb.mugenaituner.core.RosterAnalysisSummary
+import com.narmanb.mugenaituner.core.RosterSkipReason
 import kotlinx.coroutines.launch
 
 @Composable
@@ -78,7 +79,26 @@ internal fun RosterScanCard() {
                 Text("No numeric AILevel scaling: ${roster.difficultyInsensitiveCount}")
                 Text("Estimated Hard/Brutal: ${roster.estimatedHardOrBrutalCount}")
                 if (roster.skippedFolders.isNotEmpty()) {
-                    Text("Folders skipped: ${roster.skippedFolders.size}", style = MaterialTheme.typography.bodySmall)
+                    Text("Folders needing attention: ${roster.skippedFolders.size}", style = MaterialTheme.typography.bodySmall)
+                    if (roster.needsDefSelectionCount > 0) {
+                        Text(
+                            "Need active DEF selection: ${roster.needsDefSelectionCount}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    roster.skippedDetails.take(12).forEach { skipped ->
+                        val compactDetail = skipped.detail.replace('\n', ' ').take(180)
+                        Text(
+                            "${skipped.folderName} — ${skipReasonLabel(skipped.reason)}: $compactDetail",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (roster.skippedDetails.size > 12) {
+                        Text(
+                            "+ ${roster.skippedDetails.size - 12} additional folder diagnostic(s)",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
 
                 if (roster.characters.isNotEmpty()) {
@@ -101,4 +121,11 @@ internal fun RosterScanCard() {
             }
         }
     }
+}
+
+private fun skipReasonLabel(reason: RosterSkipReason): String = when (reason) {
+    RosterSkipReason.NEEDS_DEF_SELECTION -> "Needs DEF selection"
+    RosterSkipReason.NO_DEF -> "No usable DEF"
+    RosterSkipReason.UNREADABLE -> "Unreadable"
+    RosterSkipReason.ANALYSIS_ERROR -> "Analysis error"
 }
