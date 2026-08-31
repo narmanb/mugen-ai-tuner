@@ -100,6 +100,12 @@ object MugenAiAnalyzer {
             }
             if (configurationParameters.isNotEmpty()) {
                 add("Author-exposed packed AI configuration was detected separately from ordinary probability decisions.")
+                configurationParameters.forEach { parameter ->
+                    add(
+                        "${parameter.label}: ${parameter.currentLevel}/${parameter.maximumLevel} in var(${parameter.variable}) — " +
+                            if (parameter.safeToEdit) "verified safe for automatic tuning." else "understood but kept read-only by the safety rules.",
+                    )
+                }
             }
             if (aiCommandNames.isNotEmpty()) {
                 add("Legacy command-based AI activation was detected; these findings are treated more cautiously than direct AILevel logic.")
@@ -274,12 +280,17 @@ object MugenAiAnalyzer {
             val valueLine = block.lines.firstOrNull {
                 it.code.trimStart().startsWith("value", ignoreCase = true)
             }
+            val structureAndLabelAgree = explicitKind != null && structuralKind != null && explicitKind == structuralKind
             val confidence = when {
-                explicitKind != null && structuralKind != null -> Confidence.HIGH
-                explicitKind != null -> Confidence.HIGH
-                structuralKind != null -> Confidence.MEDIUM
+                structureAndLabelAgree -> Confidence.HIGH
+                explicitKind != null || structuralKind != null -> Confidence.MEDIUM
                 else -> Confidence.LOW
             }
+            val safeToEdit = structureAndLabelAgree &&
+                rangeFromComment != null &&
+                rangeFromComment in 1..4 &&
+                level in 0..rangeFromComment &&
+                valueLine != null
             val label = when (kind) {
                 AiConfigurationKind.COMBO_LEVEL -> "Combo level"
                 AiConfigurationKind.MOVEMENT_LEVEL -> "Movement level"
@@ -305,6 +316,7 @@ object MugenAiAnalyzer {
                 lineNumber = valueLine?.lineNumber ?: block.startLine,
                 originalExpression = valueLine?.code ?: "value = $valueExpression",
                 description = description,
+                safeToEdit = safeToEdit,
             )
         }
 
