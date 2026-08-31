@@ -9,6 +9,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.narmanb.mugenaituner.core.AnalyzerCompatibility
 
@@ -31,9 +32,29 @@ internal fun AnalyzerCompatibilityCard(compatibility: AnalyzerCompatibility) {
             Text("High-confidence behavior: ${compatibility.highConfidenceBehaviors}")
             Text("Medium-confidence behavior: ${compatibility.mediumConfidenceBehaviors}")
             Text("Uncertain behavior: ${compatibility.uncertainBehaviors}")
-            if (compatibility.understoodConfigurationParameters > 0 || compatibility.safeConfigurationParameters > 0) {
-                Text("Author AI settings understood: ${compatibility.understoodConfigurationParameters}")
-                Text("Author AI settings safe to edit: ${compatibility.safeConfigurationParameters}")
+            if (compatibility.configurationParameters.isNotEmpty()) {
+                Text("Author AI configuration", style = MaterialTheme.typography.titleSmall)
+                Text("Settings understood: ${compatibility.understoodConfigurationParameters}")
+                Text("Settings safe to edit: ${compatibility.safeConfigurationParameters}")
+                compatibility.configurationParameters.forEach { parameter ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "${parameter.label}: ${parameter.currentLevel}/${parameter.maximumLevel}",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            "var(${parameter.variable}) • ${parameter.confidence} • " +
+                                if (parameter.safeToEdit) "Safe for automatic tuning" else "Read-only",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Text(parameter.description, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "${parameter.filePath}:${parameter.lineNumber} — ${parameter.originalExpression}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                }
             }
             Text("Safe automatic edit candidates: ${compatibility.safeEditCandidateCount}")
             compatibility.notes.forEach { note ->
