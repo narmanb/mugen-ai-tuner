@@ -23,3 +23,9 @@ jobs:
           gradle-version: '8.11.1'
       - name: Test core and build Android debug APK
         run: gradle :core:test :app-android:assembleDebug --stacktrace
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mugen-ai-tuner-debug
+          path: app-android/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
