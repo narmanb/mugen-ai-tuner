@@ -87,4 +87,6 @@ data class CharacterAnalysis(
     val aiBehaviorCount: Int,
     val notes: List<String>,
     val configurationParameters: List<AiConfigurationParameter> = emptyList(),
+    /** Referenced character-code files that the selected source graph could not resolve/read. */
+    val unresolvedSourceReferences: List<String> = emptyList(),
 )
