@@ -34,6 +34,9 @@ object MugenAiAnalyzer {
             )
         }
 
+        val unresolvedSourceReferences = SourceGraphResolver.resolve(files)
+            .unresolvedReferences
+            .distinct()
         val blocks = files.flatMap(::parseBlocks)
         val metadata = readMetadata(files)
         val aiCommandNames = findLegacyAiCommands(blocks)
@@ -95,6 +98,9 @@ object MugenAiAnalyzer {
 
         val responsiveness = responsiveness(distinctBehaviors.size, scaledCount, aiDetected)
         val notes = buildList {
+            if (unresolvedSourceReferences.isNotEmpty()) {
+                add("${unresolvedSourceReferences.size} referenced character-code file(s) could not be resolved; analysis completeness is reduced.")
+            }
             if (flags.isNotEmpty()) {
                 add("AI-related variables were traced from their activation logic instead of assuming a fixed variable number such as var(59).")
             }
@@ -129,6 +135,7 @@ object MugenAiAnalyzer {
             aiBehaviorCount = distinctBehaviors.size,
             notes = notes,
             configurationParameters = configurationParameters,
+            unresolvedSourceReferences = unresolvedSourceReferences,
         )
     }
 
