@@ -46,6 +46,22 @@ object CharacterFolderReader {
         }
 
         visit(root, "")
-        SourceGraphResolver.resolve(files).reachableFiles
+
+        // Many character packs ship alternate/old DEF variants. When one DEF has the same base
+        // name as the selected character folder, prefer it as the active entry point instead of
+        // merging AI from every dormant variant. If no unique match exists, keep the conservative
+        // union behavior until a manual DEF selector is added.
+        val defFiles = files.filter { it.path.endsWith(".def", ignoreCase = true) }
+        val folderName = root.name.orEmpty()
+        val preferredDef = defFiles.singleOrNull { def ->
+            def.path.substringAfterLast('/').substringBeforeLast('.').equals(folderName, ignoreCase = true)
+        }
+        val resolverInput = if (preferredDef != null) {
+            files.filter { file -> !file.path.endsWith(".def", ignoreCase = true) || file.path == preferredDef.path }
+        } else {
+            files
+        }
+
+        SourceGraphResolver.resolve(resolverInput).reachableFiles
     }
 }
