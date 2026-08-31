@@ -17,7 +17,12 @@ object CharacterFolderReader {
         val root = DocumentFile.fromTreeUri(context, treeUri)
             ?: error("Android could not open the selected folder.")
         require(root.isDirectory) { "The selected item is not a folder." }
+        readDirectory(context, root)
+    }
 
+    /** Reads one character directory. Call from an IO dispatcher. */
+    internal fun readDirectory(context: Context, root: DocumentFile): List<SourceFile> {
+        require(root.isDirectory) { "The selected item is not a folder." }
         val files = mutableListOf<SourceFile>()
 
         fun visit(directory: DocumentFile, relativePath: String) {
@@ -62,6 +67,6 @@ object CharacterFolderReader {
             files
         }
 
-        SourceGraphResolver.resolve(resolverInput).reachableFiles
+        return SourceGraphResolver.resolve(resolverInput).reachableFiles
     }
 }
