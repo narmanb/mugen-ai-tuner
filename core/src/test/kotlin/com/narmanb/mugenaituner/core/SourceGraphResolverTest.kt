@@ -2,6 +2,7 @@ package com.narmanb.mugenaituner.core
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class SourceGraphResolverTest {
@@ -33,6 +34,33 @@ class SourceGraphResolverTest {
         assertTrue("data/states.st" in reachable)
         assertTrue("data/states-extra.st" in reachable)
         assertEquals(listOf("old-ai.cmd"), result.ignoredTextFiles.map { it.path })
+    }
+
+    @Test
+    fun explicitDefKeepsAlternateModesIsolated() {
+        val files = listOf(
+            SourceFile("normal.def", "[Files]\ncmd = normal.cmd\nst = shared.st"),
+            SourceFile("boss.def", "[Files]\ncmd = boss.cmd\nst = shared.st"),
+            SourceFile("normal.cmd", "trigger1 = AILevel\ntrigger1 = Random < 400"),
+            SourceFile("boss.cmd", "trigger1 = AILevel\ntrigger1 = Random < 950"),
+            SourceFile("shared.st", "[Statedef 1000]"),
+        )
+
+        val result = SourceGraphResolver.resolveFromDef(files, "normal.def")
+        val reachable = result.reachableFiles.map { it.path }.toSet()
+
+        assertEquals(setOf("normal.def", "normal.cmd", "shared.st"), reachable)
+        assertTrue("boss.def" in result.ignoredTextFiles.map { it.path })
+        assertTrue("boss.cmd" in result.ignoredTextFiles.map { it.path })
+    }
+
+    @Test
+    fun explicitDefMustExist() {
+        val files = listOf(SourceFile("char.def", "[Files]\ncmd = char.cmd"))
+
+        assertFailsWith<IllegalStateException> {
+            SourceGraphResolver.resolveFromDef(files, "missing.def")
+        }
     }
 
     @Test
