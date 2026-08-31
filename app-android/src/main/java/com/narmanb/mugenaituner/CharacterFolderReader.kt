@@ -37,9 +37,10 @@ object CharacterFolderReader {
                 val length = child.length()
                 if (length > maxTextFileBytes) return@forEach
 
-                val text = context.contentResolver.openInputStream(child.uri)?.bufferedReader()?.use { it.readText() }
+                val bytes = context.contentResolver.openInputStream(child.uri)?.use { it.readBytes() }
                     ?: return@forEach
-                files += SourceFile(childPath, text)
+                val decoded = CharacterTextCodec.decode(bytes)
+                files += SourceFile(childPath, decoded.text)
             }
         }
 
