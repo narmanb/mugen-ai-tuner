@@ -74,4 +74,45 @@ class SourceGraphResolverTest {
         assertEquals(1, result.unresolvedReferences.size)
         assertTrue(result.unresolvedReferences.single().contains("missing.cmd"))
     }
+
+    @Test
+    fun engineProvidedStcommonDoesNotMakeCharacterIncomplete() {
+        val files = listOf(
+            SourceFile(
+                "char.def",
+                """
+                [Files]
+                cmd = char.cmd
+                stcommon = common1.cns
+                """.trimIndent(),
+            ),
+            SourceFile("char.cmd", "[State -1, Attack]\ntype = ChangeState"),
+        )
+
+        val result = SourceGraphResolver.resolve(files)
+
+        assertTrue(result.unresolvedReferences.isEmpty())
+        assertEquals(setOf("char.def", "char.cmd"), result.reachableFiles.map { it.path }.toSet())
+    }
+
+    @Test
+    fun bundledCustomStcommonIsStillAnalyzedWhenPresent() {
+        val files = listOf(
+            SourceFile(
+                "char.def",
+                """
+                [Files]
+                cmd = char.cmd
+                stcommon = custom-common.cns
+                """.trimIndent(),
+            ),
+            SourceFile("char.cmd", "[State -1, Attack]\ntype = ChangeState"),
+            SourceFile("custom-common.cns", "[State -1, Common AI]\ntrigger1 = AILevel > 0"),
+        )
+
+        val result = SourceGraphResolver.resolve(files)
+
+        assertTrue(result.unresolvedReferences.isEmpty())
+        assertTrue("custom-common.cns" in result.reachableFiles.map { it.path })
+    }
 }
