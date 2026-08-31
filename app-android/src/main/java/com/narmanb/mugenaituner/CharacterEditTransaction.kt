@@ -17,6 +17,7 @@ internal data class ApplyTransactionResult(
     val changedFileCount: Int,
     val appliedEditCount: Int,
     val backupLocation: String,
+    val resultingFingerprint: CharacterFingerprint,
 )
 
 private data class WritableTarget(
@@ -59,6 +60,12 @@ internal object CharacterEditTransaction {
             "The in-memory analysis snapshot no longer matches its fingerprint."
         }
 
+        val mutationByPath = materialized.mutations.associateBy { it.relativePath }
+        val resultingFiles = freshFiles.map { file ->
+            mutationByPath[file.path]?.let { mutation -> file.copy(content = mutation.afterContent) } ?: file
+        }
+        val resultingFingerprint = CharacterFingerprinter.fingerprint(resultingFiles)
+
         val root = DocumentFile.fromTreeUri(context, treeUri)
             ?: error("Android could not reopen the selected character folder.")
         check(root.isDirectory) { "The selected character location is no longer a folder." }
@@ -90,6 +97,7 @@ internal object CharacterEditTransaction {
             characterName = characterName,
             sourceTreeUri = treeUri,
             originalFingerprint = analyzedFingerprint,
+            resultingFingerprint = resultingFingerprint,
             mutations = materialized.mutations,
             originals = targets.map { OriginalFileBytes(it.mutation.relativePath, it.originalBytes) },
             reason = reason,
@@ -132,6 +140,7 @@ internal object CharacterEditTransaction {
             changedFileCount = targets.size,
             appliedEditCount = targets.sumOf { it.mutation.appliedEdits.size },
             backupLocation = prepared.publicLocation,
+            resultingFingerprint = resultingFingerprint,
         )
     }
 
