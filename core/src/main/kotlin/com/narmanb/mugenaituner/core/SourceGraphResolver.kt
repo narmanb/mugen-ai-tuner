@@ -15,7 +15,7 @@ data class SourceGraphResult(
  * that the character never loads.
  */
 object SourceGraphResolver {
-    private val supportedExtensions = setOf("def", "cmd", "cns", "st", "states", "zss")
+    private val supportedExtensions = CharacterCodeFileTypes.supportedExtensions
     private val assignmentRegex = Regex("""^\s*([^=;]+?)\s*=\s*([^;]+)""")
     private val includeRegex = Regex("""(?i)^\s*#?include\s*(?:=\s*)?[\"']?([^\"';]+)[\"']?""")
 
