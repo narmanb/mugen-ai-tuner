@@ -59,6 +59,8 @@ data class AiBehavior(
     val lineNumber: Int,
     val section: String,
     val rawCode: String,
+    /** True when the decision already varies with numeric AILevel, directly or through var/fvar. */
+    val difficultyScaled: Boolean = false,
 )
 
 enum class AiConfigurationKind {
@@ -101,4 +103,6 @@ data class CharacterAnalysis(
     val configurationParameters: List<AiConfigurationParameter> = emptyList(),
     /** Referenced character-code files that the selected source graph could not resolve/read. */
     val unresolvedSourceReferences: List<String> = emptyList(),
+    /** Behaviors scaled through an AILevel-derived var/fvar rather than a literal AILevel token. */
+    val indirectlyScaledBehaviorCount: Int = 0,
 )
