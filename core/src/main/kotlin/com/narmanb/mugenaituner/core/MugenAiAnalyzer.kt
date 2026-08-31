@@ -50,7 +50,7 @@ object MugenAiAnalyzer {
             if (!isPotentialBehaviorBlock(block)) continue
 
             val joined = block.codeText.lowercase()
-            val directAi = "ailevel" in joined
+            val directAiConfidence = AiLevelSignalClassifier.classifyCodeBlock(block.codeText)
             val referencedFlags = varReferenceRegex.findAll(joined)
                 .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
                 .filter { it in flagNumbers }
@@ -59,11 +59,11 @@ object MugenAiAnalyzer {
                 Regex("""(?i)\bcommand\s*=\s*[\"]?${Regex.escape(command)}[\"]?""").containsMatchIn(joined)
             }
 
-            if (!directAi && referencedFlags.isEmpty() && !legacyCommand) continue
+            if (directAiConfidence == null && referencedFlags.isEmpty() && !legacyCommand) continue
             if (isPureAiActivationBlock(block)) continue
 
             val confidence = when {
-                directAi -> Confidence.HIGH
+                directAiConfidence != null -> directAiConfidence
                 referencedFlags.any { number -> flags.any { it.variable == number && it.confidence == Confidence.HIGH } } -> Confidence.HIGH
                 referencedFlags.isNotEmpty() -> Confidence.MEDIUM
                 legacyCommand -> Confidence.MEDIUM
@@ -94,7 +94,7 @@ object MugenAiAnalyzer {
         }
 
         val aiDetected = flags.isNotEmpty() || distinctBehaviors.isNotEmpty() || configurationParameters.isNotEmpty() ||
-            blocks.any { "ailevel" in it.codeText.lowercase() } || aiCommandNames.isNotEmpty()
+            blocks.any { AiLevelSignalClassifier.classifyCodeBlock(it.codeText) != null } || aiCommandNames.isNotEmpty()
 
         val responsiveness = responsiveness(distinctBehaviors.size, scaledCount, aiDetected)
         val notes = buildList {
@@ -180,22 +180,34 @@ object MugenAiAnalyzer {
                 val assignment = directVarAssignmentRegex.find(line.code) ?: continue
                 val variable = assignment.groupValues[1].toIntOrNull() ?: continue
                 val rightHandSide = assignment.groupValues[2]
-                if ("ailevel" in rightHandSide.lowercase()) {
-                    flags[variable] = AiFlag(variable, Confidence.HIGH, "Assigned directly from an AILevel expression using :=.")
-                }
+                val signalConfidence = AiLevelSignalClassifier.classifyExpression(rightHandSide) ?: continue
+                flags[variable] = AiFlag(
+                    variable,
+                    signalConfidence,
+                    if (signalConfidence == Confidence.HIGH) {
+                        "Assigned directly from an AI-positive AILevel expression using :=."
+                    } else {
+                        "Direct := assignment depends on AILevel, but the expression is not a proven AI on/off signal."
+                    },
+                )
             }
         }
 
-        // VarSet/VarAdd controllers directly gated by AILevel or a traced legacy AI command.
-        // Both `v = 59` and old/common `var(59) = 1` VarSet syntax are supported.
+        // VarSet/VarAdd controllers directly gated by AI-positive AILevel logic or a traced legacy
+        // AI command. Human-only AILevel checks do not seed an AI flag.
         blocks.forEach { block ->
             val write = variableControllerTarget(block) ?: return@forEach
+            val signalConfidence = AiLevelSignalClassifier.classifyCodeBlock(block.codeText)
             val joined = block.codeText.lowercase()
             when {
-                "ailevel" in joined -> flags[write.variable] = AiFlag(
+                signalConfidence != null -> flags[write.variable] = AiFlag(
                     write.variable,
-                    Confidence.HIGH,
-                    "${write.controllerType} is controlled by AILevel.",
+                    signalConfidence,
+                    if (signalConfidence == Confidence.HIGH) {
+                        "${write.controllerType} is controlled by AI-positive AILevel logic."
+                    } else {
+                        "${write.controllerType} depends on AILevel, but not as a proven AI-only gate."
+                    },
                 )
                 aiCommandNames.any { command -> commandReferenced(joined, command) } -> flags.putIfAbsent(
                     write.variable,
@@ -269,7 +281,7 @@ object MugenAiAnalyzer {
             val referencesKnownAi = varReferenceRegex.findAll(joined)
                 .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
                 .any { it in aiVariables }
-            if (write.variable !in aiVariables && "ailevel" !in joined && !referencesKnownAi) return@forEach
+            if (write.variable !in aiVariables && AiLevelSignalClassifier.classifyCodeBlock(block.codeText) == null && !referencesKnownAi) return@forEach
 
             val values = block.assignments()
             val valueExpression = values["value"] ?: return@forEach
@@ -431,7 +443,9 @@ object MugenAiAnalyzer {
     private fun isPureAiActivationBlock(block: ParsedBlock): Boolean {
         val values = block.assignments()
         return values["type"].orEmpty().equals("VarSet", ignoreCase = true) &&
-            ("ailevel" in block.codeText.lowercase() || block.section.startsWith("State -2", ignoreCase = true) || block.section.startsWith("State -3", ignoreCase = true))
+            (AiLevelSignalClassifier.classifyCodeBlock(block.codeText) != null ||
+                block.section.startsWith("State -2", ignoreCase = true) ||
+                block.section.startsWith("State -3", ignoreCase = true))
     }
 
     private fun isPotentialBehaviorBlock(block: ParsedBlock): Boolean {
