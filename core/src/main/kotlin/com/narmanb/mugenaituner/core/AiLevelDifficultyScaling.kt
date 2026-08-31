@@ -14,30 +14,41 @@ object AiLevelDifficultyScaling {
     private val rangeComparison = Regex(
         """(?i)\bailevel\s*(?:=|==)\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*]""",
     )
+    private val redundantAiLevelParentheses = Regex("""(?i)\(\s*ailevel\s*\)""")
 
     fun hasNumericScaling(code: String): Boolean {
         if (!code.contains("ailevel", ignoreCase = true)) return false
-        if (arithmetic.containsMatchIn(code)) return true
+        val normalized = normalizeAiLevelParentheses(code)
+        if (arithmetic.containsMatchIn(normalized)) return true
 
-        rangeComparison.findAll(code).forEach { match ->
+        rangeComparison.findAll(normalized).forEach { match ->
             val low = match.groupValues[1].toDoubleOrNull() ?: return@forEach
             val high = match.groupValues[2].toDoubleOrNull() ?: return@forEach
             if (variesAcrossAiLevels { level -> level.toDouble() in low..high }) return true
         }
 
-        forwardComparison.findAll(code).forEach { match ->
+        forwardComparison.findAll(normalized).forEach { match ->
             val operator = match.groupValues[1]
             val value = match.groupValues[2].toDoubleOrNull() ?: return@forEach
             if (variesAcrossAiLevels { level -> compare(level.toDouble(), operator, value) }) return true
         }
 
-        reverseComparison.findAll(code).forEach { match ->
+        reverseComparison.findAll(normalized).forEach { match ->
             val value = match.groupValues[1].toDoubleOrNull() ?: return@forEach
             val operator = match.groupValues[2]
             if (variesAcrossAiLevels { level -> compare(value, operator, level.toDouble()) }) return true
         }
 
         return false
+    }
+
+    private fun normalizeAiLevelParentheses(code: String): String {
+        var current = code
+        while (true) {
+            val next = redundantAiLevelParentheses.replace(current, "AILevel")
+            if (next == current) return current
+            current = next
+        }
     }
 
     private fun variesAcrossAiLevels(predicate: (Int) -> Boolean): Boolean {
