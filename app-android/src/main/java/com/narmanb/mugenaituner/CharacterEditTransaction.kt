@@ -8,6 +8,7 @@ import com.narmanb.mugenaituner.core.CharacterFingerprinter
 import com.narmanb.mugenaituner.core.FileMutation
 import com.narmanb.mugenaituner.core.MaterializedEditPlan
 import com.narmanb.mugenaituner.core.SourceFile
+import com.narmanb.mugenaituner.core.SourceGraphResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.charset.Charset
@@ -29,7 +30,7 @@ private data class WritableTarget(
 
 /**
  * Performs a character edit as a guarded transaction:
- * 1. re-read the character and reject outside changes;
+ * 1. re-read the active DEF source graph and reject outside changes;
  * 2. verify every target file still exactly matches the analyzed text;
  * 3. save exact original bytes in a versioned backup;
  * 4. write and verify every changed file;
@@ -49,7 +50,8 @@ internal object CharacterEditTransaction {
             "The edit plan is not safe to apply. Resolve ambiguous proposed changes first."
         }
 
-        val freshFiles = CharacterFolderReader.read(context, treeUri)
+        val freshAllFiles = CharacterFolderReader.read(context, treeUri)
+        val freshFiles = SourceGraphResolver.resolve(freshAllFiles).reachableFiles
         val freshFingerprint = CharacterFingerprinter.fingerprint(freshFiles)
         check(!analyzedFingerprint.differsFrom(freshFingerprint)) {
             "Character files changed after analysis. Re-analyze before applying any edits."
