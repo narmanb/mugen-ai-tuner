@@ -78,6 +78,7 @@ internal fun RosterScanCard() {
                 Text("Custom AI detected: ${roster.customAiCount}")
                 Text("No numeric AILevel scaling: ${roster.difficultyInsensitiveCount}")
                 Text("Estimated Hard/Brutal: ${roster.estimatedHardOrBrutalCount}")
+                Text("Incomplete source graphs: ${roster.incompleteSourceCount}")
                 if (roster.skippedFolders.isNotEmpty()) {
                     Text("Folders needing attention: ${roster.skippedFolders.size}", style = MaterialTheme.typography.bodySmall)
                     if (roster.needsDefSelectionCount > 0) {
@@ -106,9 +107,20 @@ internal fun RosterScanCard() {
                     roster.characters.take(25).forEach { character ->
                         val strength = character.estimatedStrength?.let { "$it% ${character.estimatedStrengthLabel}" }
                             ?: character.estimatedStrengthLabel
+                        val compatibility = character.analyzerCompatibilityScore?.let { " • Compat $it%" }.orEmpty()
+                        val missing = if (character.unresolvedReferenceCount > 0) {
+                            " • Missing ${character.unresolvedReferenceCount} source ref(s)"
+                        } else {
+                            ""
+                        }
                         Text(
-                            "${character.characterName} — $strength • AILevel ${character.difficultyResponsiveness}",
+                            "${character.characterName} — $strength • AILevel ${character.difficultyResponsiveness}$compatibility$missing",
                             style = MaterialTheme.typography.bodySmall,
+                            color = if (character.unresolvedReferenceCount > 0) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
                         )
                     }
                     if (roster.characters.size > 25) {
