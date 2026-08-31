@@ -14,6 +14,13 @@ class AmbiguousCharacterDefException(
     "This character folder contains multiple possible active DEF files: ${defPaths.joinToString()}. Choose the active DEF before analysis so alternate modes are not mixed together.",
 )
 
+data class CharacterFolderReadResult(
+    val files: List<SourceFile>,
+    val unresolvedReferences: List<String>,
+    val ignoredTextFileCount: Int,
+    val activeDefPath: String?,
+)
+
 object CharacterFolderReader {
     private val supportedExtensions = setOf("def", "cmd", "cns", "st", "states", "zss")
     private const val maxFiles = 400
@@ -23,11 +30,17 @@ object CharacterFolderReader {
         context: Context,
         treeUri: Uri,
         activeDefPath: String? = null,
-    ): List<SourceFile> = withContext(Dispatchers.IO) {
+    ): List<SourceFile> = readDetailed(context, treeUri, activeDefPath).files
+
+    suspend fun readDetailed(
+        context: Context,
+        treeUri: Uri,
+        activeDefPath: String? = null,
+    ): CharacterFolderReadResult = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, treeUri)
             ?: error("Android could not open the selected folder.")
         require(root.isDirectory) { "The selected item is not a folder." }
-        readDirectory(context, root, activeDefPath)
+        readDirectoryDetailed(context, root, activeDefPath)
     }
 
     /** Reads one character directory. Call from an IO dispatcher. */
@@ -35,7 +48,14 @@ object CharacterFolderReader {
         context: Context,
         root: DocumentFile,
         activeDefPath: String? = null,
-    ): List<SourceFile> {
+    ): List<SourceFile> = readDirectoryDetailed(context, root, activeDefPath).files
+
+    /** Reads one character directory plus source-graph completeness diagnostics. */
+    internal fun readDirectoryDetailed(
+        context: Context,
+        root: DocumentFile,
+        activeDefPath: String? = null,
+    ): CharacterFolderReadResult {
         require(root.isDirectory) { "The selected item is not a folder." }
         val files = mutableListOf<SourceFile>()
 
@@ -67,7 +87,14 @@ object CharacterFolderReader {
         visit(root, "")
 
         val defFiles = files.filter { it.path.endsWith(".def", ignoreCase = true) }
-        if (defFiles.isEmpty()) return files
+        if (defFiles.isEmpty()) {
+            return CharacterFolderReadResult(
+                files = files,
+                unresolvedReferences = emptyList(),
+                ignoredTextFileCount = 0,
+                activeDefPath = null,
+            )
+        }
 
         val selectedDef = when {
             activeDefPath != null -> defFiles.firstOrNull { it.path.equals(activeDefPath, ignoreCase = true) }
@@ -85,6 +112,12 @@ object CharacterFolderReader {
             }
         }
 
-        return SourceGraphResolver.resolveFromDef(files, selectedDef.path).reachableFiles
+        val graph = SourceGraphResolver.resolveFromDef(files, selectedDef.path)
+        return CharacterFolderReadResult(
+            files = graph.reachableFiles,
+            unresolvedReferences = graph.unresolvedReferences,
+            ignoredTextFileCount = graph.ignoredTextFiles.size,
+            activeDefPath = selectedDef.path,
+        )
     }
 }
