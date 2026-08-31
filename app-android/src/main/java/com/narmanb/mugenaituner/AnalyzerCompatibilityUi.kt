@@ -31,6 +31,10 @@ internal fun AnalyzerCompatibilityCard(compatibility: AnalyzerCompatibility) {
             Text("High-confidence behavior: ${compatibility.highConfidenceBehaviors}")
             Text("Medium-confidence behavior: ${compatibility.mediumConfidenceBehaviors}")
             Text("Uncertain behavior: ${compatibility.uncertainBehaviors}")
+            if (compatibility.understoodConfigurationParameters > 0 || compatibility.safeConfigurationParameters > 0) {
+                Text("Author AI settings understood: ${compatibility.understoodConfigurationParameters}")
+                Text("Author AI settings safe to edit: ${compatibility.safeConfigurationParameters}")
+            }
             Text("Safe automatic edit candidates: ${compatibility.safeEditCandidateCount}")
             compatibility.notes.forEach { note ->
                 Text("• $note", style = MaterialTheme.typography.bodySmall)
