@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import com.narmanb.mugenaituner.core.CharacterFingerprinter
 import com.narmanb.mugenaituner.core.FileMutation
+import com.narmanb.mugenaituner.core.SourceGraphResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -31,7 +32,8 @@ internal object BackupRestoreTransaction {
         treeUri: Uri,
         characterName: String,
     ): RestoreTransactionResult = withContext(Dispatchers.IO) {
-        val currentFiles = CharacterFolderReader.read(context, treeUri)
+        val allCurrentFiles = CharacterFolderReader.read(context, treeUri)
+        val currentFiles = SourceGraphResolver.resolve(allCurrentFiles).reachableFiles
         val currentFingerprint = CharacterFingerprinter.fingerprint(currentFiles)
         val snapshot = BackupHistoryStore.latestSnapshotEndingAt(
             context = context,
