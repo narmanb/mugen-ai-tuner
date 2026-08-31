@@ -70,6 +70,26 @@ class LegacyAiDetectionTest {
     }
 
     @Test
+    fun airSubstringDoesNotCountAsAiNameHint() {
+        val cmd = """
+            [Command]
+            name = "air_combo"
+            command = a,b,c,x,y,z,a,b,c
+
+            [State -1, Air Combo]
+            type = ChangeState
+            trigger1 = command = "air_combo"
+            trigger1 = statetype = A
+            value = 1300
+        """.trimIndent()
+
+        val result = MugenAiAnalyzer.analyze(listOf(SourceFile("air.cmd", cmd)))
+
+        assertFalse(result.aiDetected)
+        assertEquals(0, result.aiFlags.size)
+    }
+
+    @Test
     fun cpuNamedImpossibleCommandCanSeedLegacyAiFlag() {
         val cmd = """
             [Command]
