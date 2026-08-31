@@ -442,11 +442,8 @@ object MugenAiAnalyzer {
     }
 
     private fun variableReferences(code: String): Set<VariableKey> =
-        variableReferenceRegex.findAll(code)
-            .mapNotNull { match ->
-                val index = match.groupValues[2].toIntOrNull() ?: return@mapNotNull null
-                VariableKey(variableKind(match.groupValues[1]), index)
-            }
+        MugenVariableReferenceScanner.localReferences(code)
+            .map { reference -> VariableKey(reference.kind, reference.index) }
             .toSet()
 
     private fun variableKind(token: String): VariableKind =
