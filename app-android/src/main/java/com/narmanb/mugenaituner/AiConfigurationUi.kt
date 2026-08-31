@@ -40,6 +40,14 @@ internal fun AiConfigurationCard(parameters: List<AiConfigurationParameter>) {
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
+                        if (parameter.safeToEdit) {
+                            "Safety: Verified for automatic tuning"
+                        } else {
+                            "Safety: Read-only — structure/range not proven strongly enough"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
                         "${parameter.filePath}:${parameter.lineNumber}",
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -51,8 +59,9 @@ internal fun AiConfigurationCard(parameters: List<AiConfigurationParameter>) {
                 }
             }
 
+            val safeCount = parameters.count { it.safeToEdit }
             Text(
-                "Automatic editing of these packed settings remains disabled until the app verifies the exact patch structure and safe level range.",
+                "$safeCount/${parameters.size} detected author setting(s) passed the strict automatic-edit check. Read-only settings remain visible for inspection but are never modified by presets or Custom tuning.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
