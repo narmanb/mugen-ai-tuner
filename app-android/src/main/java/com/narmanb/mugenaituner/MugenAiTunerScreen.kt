@@ -624,7 +624,7 @@ private fun DifficultyControls(
                         )
                         Slider(
                             value = value.toFloat(),
-                            onValueChange = { onCategoryChanged(category, value) },
+                            onValueChange = { onCategoryChanged(category, it.toInt()) },
                             valueRange = 0f..100f,
                             steps = 99,
                         )
