@@ -51,7 +51,8 @@ class HolnAiConfigurationTest {
             value = 10 * 3 ; movement setting 0~3
         """.trimIndent()
 
-        val result = MugenAiAnalyzer.analyze(listOf(SourceFile("holn.cns", cns)))
+        val source = SourceFile("holn.cns", cns)
+        val result = MugenAiAnalyzer.analyze(listOf(source))
 
         assertTrue(result.aiFlags.any { it.variable == 59 })
         assertEquals(2, result.configurationParameters.size)
@@ -60,15 +61,32 @@ class HolnAiConfigurationTest {
         assertEquals(2, combo.currentLevel)
         assertEquals(3, combo.maximumLevel)
         assertEquals(Confidence.HIGH, combo.confidence)
+        assertTrue(combo.safeToEdit)
 
         val movement = result.configurationParameters.single { it.kind == AiConfigurationKind.MOVEMENT_LEVEL }
         assertEquals(3, movement.currentLevel)
         assertEquals(3, movement.maximumLevel)
         assertEquals(Confidence.HIGH, movement.confidence)
+        assertTrue(movement.safeToEdit)
+
+        // Normal (50%) maps a 0..3 author setting to level 2. Combo is already 2; movement 3 -> 2.
+        val plan = AiEditPlanner.plan(
+            analysis = result,
+            profile = SkillProfile.fromPreset(DifficultyPreset.NORMAL),
+            engineDifficultyScaling = false,
+        )
+        val movementEdit = plan.edits.single { it.category == BehaviorCategory.MOVEMENT }
+        assertEquals("value = 10 * 3", movementEdit.originalExpression)
+        assertEquals("value = 10 * 2", movementEdit.replacementExpression)
+
+        val materialized = AiEditMaterializer.materialize(listOf(source), plan)
+        assertTrue(materialized.isSafeToApply)
+        assertEquals(1, materialized.mutations.size)
+        assertTrue("value = 10 * 2 ; movement setting 0~3" in materialized.mutations.single().afterContent)
     }
 
     @Test
-    fun structuralHolnPatternWorksWithoutEnglishComments() {
+    fun structuralHolnPatternWorksWithoutEnglishCommentsButStaysReadOnly() {
         val cns = """
             [State -2]
             type = VarAdd
@@ -89,8 +107,29 @@ class HolnAiConfigurationTest {
 
         assertEquals(2, result.configurationParameters.size)
         assertEquals(Confidence.MEDIUM, result.configurationParameters[0].confidence)
+        assertTrue(result.configurationParameters.none { it.safeToEdit })
         assertTrue(result.configurationParameters.any { it.kind == AiConfigurationKind.COMBO_LEVEL })
         assertTrue(result.configurationParameters.any { it.kind == AiConfigurationKind.MOVEMENT_LEVEL })
+    }
+
+    @Test
+    fun explicitLabelWithoutMatchingHolnGateStaysReadOnly() {
+        val cns = """
+            [State -2, combo setting]
+            type = VarAdd
+            triggerall = AILevel > 0
+            trigger1 = Ctrl
+            v = 22
+            value = 10 * 3 ; combo setting 0~3
+        """.trimIndent()
+
+        val result = MugenAiAnalyzer.analyze(listOf(SourceFile("different.cns", cns)))
+        val parameter = result.configurationParameters.single()
+
+        assertEquals(AiConfigurationKind.COMBO_LEVEL, parameter.kind)
+        assertEquals(Confidence.MEDIUM, parameter.confidence)
+        assertFalse(parameter.safeToEdit)
+        assertTrue(AiConfigurationTuning.plan(result.configurationParameters, SkillProfile(30)).isEmpty())
     }
 
     @Test
