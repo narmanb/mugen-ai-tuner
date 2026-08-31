@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.narmanb.mugenaituner.core.AiBehavior
 import com.narmanb.mugenaituner.core.AiEditMaterializer
 import com.narmanb.mugenaituner.core.AiEditPlanner
+import com.narmanb.mugenaituner.core.BaselineRetuner
 import com.narmanb.mugenaituner.core.BehaviorCategory
 import com.narmanb.mugenaituner.core.CharacterAnalysis
 import com.narmanb.mugenaituner.core.CharacterFingerprint
@@ -72,6 +73,10 @@ private fun MugenAiTunerApp() {
     var analysis by remember { mutableStateOf<CharacterAnalysis?>(null) }
     var analyzedFiles by remember { mutableStateOf<List<SourceFile>>(emptyList()) }
     var analyzedFingerprint by remember { mutableStateOf<CharacterFingerprint?>(null) }
+    var tuningBaselineFiles by remember { mutableStateOf<List<SourceFile>>(emptyList()) }
+    var tuningBaselineAnalysis by remember { mutableStateOf<CharacterAnalysis?>(null) }
+    var baselineHistoryDepth by remember { mutableStateOf(0) }
+    var baselineError by remember { mutableStateOf<String?>(null) }
     var selectedTreeUri by remember { mutableStateOf<Uri?>(null) }
     var matchingSnapshot by remember { mutableStateOf<StoredBackupSnapshot?>(null) }
     var loading by remember { mutableStateOf(false) }
@@ -96,11 +101,27 @@ private fun MugenAiTunerApp() {
             )
         }
 
+        val reconstruction = runCatching {
+            BackupBaselineReconstructor.reconstruct(
+                context = context,
+                characterName = result.characterName,
+                treeUri = uri,
+                currentFiles = files,
+                currentFingerprint = fingerprint,
+            )
+        }
+        val baseline = reconstruction.getOrNull()
+        val baselineFiles = baseline?.files ?: files
+
         selectedTreeUri = uri
         analyzedFiles = files
         analyzedFingerprint = fingerprint
         analysis = result
         matchingSnapshot = snapshot
+        tuningBaselineFiles = baselineFiles
+        tuningBaselineAnalysis = MugenAiAnalyzer.analyze(baselineFiles)
+        baselineHistoryDepth = baseline?.historyDepth ?: 0
+        baselineError = reconstruction.exceptionOrNull()?.message
         if (resetDifficulty) {
             selectedPreset = DifficultyPreset.NORMAL
             skillProfile = SkillProfile.fromPreset(DifficultyPreset.NORMAL)
@@ -196,18 +217,23 @@ private fun MugenAiTunerApp() {
         analysis?.let { result ->
             item { AnalysisSummary(result) }
 
-            if (result.aiDetected) {
+            val tuningResult = tuningBaselineAnalysis ?: result
+            if (tuningResult.aiDetected) {
                 val availableCategories = DifficultyTuning.adjustableCategories.filter { category ->
-                    result.behaviors.any { it.category == category }
+                    tuningResult.behaviors.any { it.category == category }
                 }
                 val plan = AiEditPlanner.plan(
-                    analysis = result,
+                    analysis = tuningResult,
                     profile = skillProfile,
                     engineDifficultyScaling = engineDifficultyScaling,
                 )
-                val materialized = AiEditMaterializer.materialize(analyzedFiles, plan)
+                val desiredFromBaseline = AiEditMaterializer.materialize(tuningBaselineFiles, plan)
+                val materialized = BaselineRetuner.retune(
+                    currentFiles = analyzedFiles,
+                    baselineFiles = tuningBaselineFiles,
+                    desiredFromBaseline = desiredFromBaseline,
+                )
                 val currentSnapshot = matchingSnapshot
-                val currentlyTuned = currentSnapshot != null && !currentSnapshot.reason.startsWith("Undo snapshot")
 
                 item {
                     DifficultyControls(
@@ -244,14 +270,25 @@ private fun MugenAiTunerApp() {
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Text("Apply and recovery", style = MaterialTheme.typography.titleMedium)
-                            if (currentlyTuned) {
-                                Text(
-                                    "This exact character state matches a previous MUGEN AI Tuner change. To prevent accidental compounding, restore the previous state before applying a different preset.",
+                            when {
+                                baselineError != null -> Text(
+                                    "Automatic writing is disabled because the previous backup chain could not be verified: $baselineError",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                                baselineHistoryDepth > 0 -> Text(
+                                    "A verified original baseline was reconstructed through $baselineHistoryDepth backup snapshot(s). New difficulty choices are calculated from that baseline, so changing Normal → Easy → Hard does not compound earlier edits.",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
-                            } else {
-                                Text(
+                                else -> Text(
                                     "Apply writes only the unambiguous changes shown above. Exact original bytes are backed up first under Documents/MUGEN AI Tuner/Backups.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+
+                            if (materialized.mutations.isEmpty() && materialized.errors.isEmpty()) {
+                                Text(
+                                    "The character already matches this target for every behavior the app can safely edit.",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
@@ -278,7 +315,7 @@ private fun MugenAiTunerApp() {
                                                 },
                                             )
                                         }.onSuccess { transaction ->
-                                            actionMessage = "Applied ${transaction.appliedEditCount} AI change(s) across ${transaction.changedFileCount} file(s). Backup: ${transaction.backupLocation}"
+                                            actionMessage = "Applied ${transaction.appliedEditCount} classified AI edit(s) across ${transaction.changedFileCount} file(s). Backup: ${transaction.backupLocation}"
                                             runCatching { refreshFromDisk(uri, resetDifficulty = false) }
                                                 .onFailure { error = it.message ?: "Edits were applied, but re-analysis failed." }
                                         }.onFailure { throwable ->
@@ -287,7 +324,7 @@ private fun MugenAiTunerApp() {
                                         applying = false
                                     }
                                 },
-                                enabled = !applying && materialized.isSafeToApply && !currentlyTuned,
+                                enabled = !applying && baselineError == null && materialized.isSafeToApply,
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Text("Apply safe changes")
@@ -484,8 +521,9 @@ private fun EditPlanPreview(plan: EditPlan, materialized: MaterializedEditPlan) 
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text("Safe-change preview", style = MaterialTheme.typography.titleMedium)
-            Text("High-confidence proposed edits: ${plan.edits.size}")
-            Text("Verified writable edits: ${materialized.mutations.sumOf { it.appliedEdits.size }}")
+            Text("High-confidence target edits: ${plan.edits.size}")
+            Text("Files that would change from the current state: ${materialized.mutations.size}")
+            Text("Classified edits carried into target: ${materialized.mutations.sumOf { it.appliedEdits.size }}")
             Text("AI behavior blocks intentionally left unchanged: ${plan.skippedBehaviorCount}")
 
             plan.edits.take(8).forEach { edit ->
