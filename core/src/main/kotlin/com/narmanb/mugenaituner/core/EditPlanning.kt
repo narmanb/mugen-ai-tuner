@@ -53,6 +53,20 @@ object AiEditPlanner {
         engineDifficultyScaling: Boolean,
     ): EditPlan {
         val normalized = profile.normalized()
+        val unresolved = analysis.unresolvedSourceReferences.distinct()
+        if (unresolved.isNotEmpty()) {
+            return EditPlan(
+                profile = normalized,
+                edits = emptyList(),
+                skippedBehaviorCount = analysis.behaviors.size,
+                notes = buildList {
+                    add("Automatic editing is blocked because ${unresolved.size} referenced character-code file(s) could not be resolved. Analysis remains read-only until the source graph is complete.")
+                    unresolved.take(4).forEach { add("Missing reference: $it") }
+                },
+                engineDifficultyScaling = engineDifficultyScaling,
+            )
+        }
+
         val edits = mutableListOf<PlannedEdit>()
         var skipped = 0
         var rangeScalingSkipped = 0
