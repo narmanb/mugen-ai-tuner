@@ -12,6 +12,9 @@ data class RosterCharacterSummary(
     val aiBehaviorCount: Int,
     val highConfidenceBehaviorCount: Int,
     val mediumConfidenceBehaviorCount: Int,
+    val analyzerCompatibilityScore: Int? = null,
+    val safeEditCandidateCount: Int = 0,
+    val unresolvedReferenceCount: Int = 0,
 )
 
 enum class RosterSkipReason {
@@ -42,11 +45,13 @@ data class RosterAnalysisSummary(
     val needsDefSelectionCount: Int get() = skippedDetails.count {
         it.reason == RosterSkipReason.NEEDS_DEF_SELECTION
     }
+    val incompleteSourceCount: Int get() = characters.count { it.unresolvedReferenceCount > 0 }
 }
 
 object RosterAnalysis {
     fun summarize(folderName: String, analysis: CharacterAnalysis): RosterCharacterSummary {
         val strength = AiStrengthEstimator.estimate(analysis)
+        val compatibility = AnalyzerCompatibilityEstimator.estimate(analysis)
         return RosterCharacterSummary(
             folderName = folderName,
             characterName = analysis.characterName,
@@ -59,6 +64,9 @@ object RosterAnalysis {
             aiBehaviorCount = analysis.aiBehaviorCount,
             highConfidenceBehaviorCount = analysis.behaviors.count { it.confidence == Confidence.HIGH },
             mediumConfidenceBehaviorCount = analysis.behaviors.count { it.confidence == Confidence.MEDIUM },
+            analyzerCompatibilityScore = compatibility.understandingScore,
+            safeEditCandidateCount = compatibility.safeEditCandidateCount,
+            unresolvedReferenceCount = analysis.unresolvedSourceReferences.distinct().size,
         )
     }
 }
