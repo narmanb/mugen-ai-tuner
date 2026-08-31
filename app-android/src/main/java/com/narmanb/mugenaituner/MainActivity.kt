@@ -222,6 +222,7 @@ private fun MugenAiTunerApp() {
 
         analysis?.let { result ->
             item { AnalysisSummary(result) }
+            item { AiStrengthCard(com.narmanb.mugenaituner.core.AiStrengthEstimator.estimate(result)) }
 
             val tuningResult = tuningBaselineAnalysis ?: result
             if (tuningResult.aiDetected) {
