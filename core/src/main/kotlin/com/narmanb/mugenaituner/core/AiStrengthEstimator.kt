@@ -21,8 +21,7 @@ data class AiStrengthEstimate(
  * reactive AI, not as a measured win-rate or frame-perfect skill rating.
  */
 object AiStrengthEstimator {
-    private val lessThanRandom = Regex("""(?i)\brandom\s*(?:<|<=)\s*(\d{1,3})\b""")
-    private val greaterThanRandom = Regex("""(?i)\brandom\s*(?:>|>=)\s*(\d{1,3})\b""")
+    private val simpleRandom = Regex("""(?i)\brandom\s*(<=|>=|<|>)\s*(1000|\d{1,3})\b""")
 
     fun estimate(analysis: CharacterAnalysis): AiStrengthEstimate {
         if (!analysis.aiDetected) {
@@ -37,16 +36,15 @@ object AiStrengthEstimator {
         }
 
         val evidence = mutableListOf<Evidence>()
-        analysis.behaviors.forEach { behavior ->
-            if (behavior.confidence == Confidence.LOW || behavior.confidence == Confidence.UNKNOWN) return@forEach
-
-            lessThanRandom.findAll(behavior.rawCode).forEach { match ->
-                val threshold = match.groupValues[1].toIntOrNull() ?: return@forEach
-                evidence += Evidence(behavior.category, threshold.coerceIn(0, 999) / 1000.0, behavior.confidence)
-            }
-            greaterThanRandom.findAll(behavior.rawCode).forEach { match ->
-                val threshold = match.groupValues[1].toIntOrNull() ?: return@forEach
-                evidence += Evidence(behavior.category, (1000 - threshold.coerceIn(0, 999)) / 1000.0, behavior.confidence)
+        for (behavior in analysis.behaviors) {
+            if (behavior.confidence == Confidence.LOW || behavior.confidence == Confidence.UNKNOWN) continue
+            for (match in simpleRandom.findAll(behavior.rawCode)) {
+                val threshold = match.groupValues[2].toIntOrNull() ?: continue
+                val chance = StandardizedAiCalibration.activationChance(
+                    operator = match.groupValues[1],
+                    threshold = threshold,
+                )
+                evidence += Evidence(behavior.category, chance, behavior.confidence)
             }
         }
 
