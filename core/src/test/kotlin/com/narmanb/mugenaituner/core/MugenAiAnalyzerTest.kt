@@ -96,6 +96,52 @@ class MugenAiAnalyzerTest {
     }
 
     @Test
+    fun `AILevel greater or equal one is only an AI on off gate`() {
+        val files = listOf(
+            SourceFile(
+                "fighter.cmd",
+                """
+                [State -1, Guard]
+                type = ChangeState
+                triggerall = AILevel >= 1
+                trigger1 = InGuardDist
+                trigger1 = Random < 850
+                value = 120
+                """.trimIndent(),
+            ),
+        )
+
+        val result = MugenAiAnalyzer.analyze(files)
+
+        assertTrue(result.aiDetected)
+        assertEquals(0, result.directlyScaledBehaviorCount)
+        assertEquals(DifficultyResponsiveness.NONE, result.difficultyResponsiveness)
+    }
+
+    @Test
+    fun `AILevel threshold above one is genuine difficulty gating`() {
+        val files = listOf(
+            SourceFile(
+                "fighter.cmd",
+                """
+                [State -1, Guard]
+                type = ChangeState
+                triggerall = AILevel >= 4
+                trigger1 = InGuardDist
+                trigger1 = Random < 850
+                value = 120
+                """.trimIndent(),
+            ),
+        )
+
+        val result = MugenAiAnalyzer.analyze(files)
+
+        assertTrue(result.aiDetected)
+        assertEquals(1, result.directlyScaledBehaviorCount)
+        assertEquals(DifficultyResponsiveness.FULL, result.difficultyResponsiveness)
+    }
+
+    @Test
     fun `follows simple AI flag chains`() {
         val files = listOf(
             SourceFile(
