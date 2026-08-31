@@ -36,6 +36,43 @@ class AnalyzerCompatibilityTest {
     }
 
     @Test
+    fun understoodPackedSettingCountsAsCompatibilityWithoutPretendingItIsWritable() {
+        val parameter = AiConfigurationParameter(
+            kind = AiConfigurationKind.COMBO_LEVEL,
+            label = "Combo level",
+            variable = 59,
+            currentLevel = 2,
+            minimumLevel = 0,
+            maximumLevel = 3,
+            confidence = Confidence.HIGH,
+            filePath = "ai.cns",
+            lineNumber = 20,
+            originalExpression = "value = 10 * 2",
+            description = "Combo setting",
+            safeToEdit = false,
+        )
+        val analysis = CharacterAnalysis(
+            characterName = "Packed",
+            author = null,
+            aiDetected = true,
+            aiFlags = listOf(AiFlag(59, Confidence.HIGH, "AI")),
+            behaviors = emptyList(),
+            difficultyResponsiveness = DifficultyResponsiveness.NONE,
+            directlyScaledBehaviorCount = 0,
+            aiBehaviorCount = 0,
+            notes = emptyList(),
+            configurationParameters = listOf(parameter),
+        )
+
+        val result = AnalyzerCompatibilityEstimator.estimate(analysis)
+
+        assertTrue((result.understandingScore ?: 0) >= 85)
+        assertEquals(1, result.understoodConfigurationParameters)
+        assertEquals(0, result.safeConfigurationParameters)
+        assertEquals(0, result.safeEditCandidateCount)
+    }
+
+    @Test
     fun uncertainAiDoesNotPretendToBeWellSupported() {
         val analysis = CharacterAnalysis(
             characterName = "Odd",
