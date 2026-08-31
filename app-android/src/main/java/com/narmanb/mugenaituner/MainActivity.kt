@@ -184,6 +184,8 @@ private fun MugenAiTunerApp() {
             }
         }
 
+        item { RosterScanCard() }
+
         if (loading || applying) {
             item {
                 Row(
@@ -223,6 +225,8 @@ private fun MugenAiTunerApp() {
         analysis?.let { result ->
             item { AnalysisSummary(result) }
             item { AiStrengthCard(com.narmanb.mugenaituner.core.AiStrengthEstimator.estimate(result)) }
+            item { AiComparisonPicker(result) }
+            selectedTreeUri?.let { uri -> item { CharacterNotesCard(uri, result.characterName) } }
 
             val tuningResult = tuningBaselineAnalysis ?: result
             if (tuningResult.aiDetected) {
