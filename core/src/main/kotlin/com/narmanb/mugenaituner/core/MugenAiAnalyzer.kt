@@ -6,6 +6,7 @@ object MugenAiAnalyzer {
     private val varReferenceRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)""")
     private val directVarAssignmentRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)\s*:?=""")
     private val randomThresholdRegex = Regex("""(?i)\brandom\s*(?:<|<=|>|>=)\s*\d+""")
+    private val commandTriggerNameRegex = Regex("""(?i)\bcommand\s*=\s*\"([^\"]+)\"""")
     private val scaledAiLevelRegex = Regex(
         """(?i)(ailevel\s*[+\-*/]|[+\-*/]\s*ailevel|ailevel\s*(?:>=|>|==|=|<=|<)\s*[1-8]\b)""",
     )
@@ -156,7 +157,7 @@ object MugenAiAnalyzer {
             }
         }
 
-        // Standard VarSet controllers directly gated by AILevel.
+        // Standard VarSet controllers directly gated by AILevel or a traced legacy AI command.
         blocks.forEach { block ->
             val target = varSetTarget(block) ?: return@forEach
             val joined = block.codeText.lowercase()
@@ -168,7 +169,7 @@ object MugenAiAnalyzer {
                 )
                 aiCommandNames.any { command -> commandReferenced(joined, command) } -> flags.putIfAbsent(
                     target,
-                    AiFlag(target, Confidence.MEDIUM, "VarSet is controlled by a likely legacy AI-only command."),
+                    AiFlag(target, Confidence.MEDIUM, "VarSet is controlled by a likely legacy AI-only command set."),
                 )
             }
         }
@@ -198,17 +199,60 @@ object MugenAiAnalyzer {
         return flags.values.toList()
     }
 
+    /**
+     * Old WinMUGEN characters often activate AI by having the engine randomly satisfy commands a
+     * human could not reasonably enter. Names such as cpu1/cpu2 are common, but not guaranteed.
+     *
+     * We therefore require structural evidence before treating opaque command names as AI:
+     * a VarSet controller must be driven by several command definitions that themselves look
+     * deliberately impractical. This is much safer than declaring every long combo command AI.
+     */
     private fun findLegacyAiCommands(blocks: List<ParsedBlock>): Set<String> {
+        data class CommandEvidence(
+            val name: String,
+            val command: String,
+            val hinted: Boolean,
+            val impractical: Boolean,
+        )
+
+        val definitions = blocks
+            .filter { it.section.equals("Command", ignoreCase = true) }
+            .mapNotNull { block ->
+                val values = block.assignments()
+                val name = values["name"]?.trim('"') ?: return@mapNotNull null
+                val command = values["command"]?.trim('"').orEmpty()
+                val lowerName = name.lowercase()
+                val hinted = lowerName.contains("ai") ||
+                    lowerName.contains("cpu") ||
+                    lowerName.contains("computer")
+                val separators = command.count { it == '+' || it == ',' }
+                val directionalContradiction = Regex("""(?i)(?:^|[, +])(?:u|d|f|b)[, +]+(?:u|d|f|b)(?:$|[, +])""")
+                    .containsMatchIn(command) &&
+                    (("u" in command.lowercase() && "d" in command.lowercase()) ||
+                        ("f" in command.lowercase() && "b" in command.lowercase()))
+                val impractical = separators >= 7 || command.length >= 32 || directionalContradiction
+                CommandEvidence(name, command, hinted, impractical)
+            }
+
+        val byName = definitions.associateBy { it.name.lowercase() }
         val result = linkedSetOf<String>()
-        for (block in blocks) {
-            if (!block.section.equals("Command", ignoreCase = true)) continue
-            val values = block.assignments()
-            val name = values["name"]?.trim('"') ?: continue
-            val command = values["command"]?.trim('"').orEmpty()
-            val looksNamedForAi = name.contains("ai", ignoreCase = true)
-            val looksHumanlyAwkward = command.count { it == '+' || it == ',' } >= 7 || command.length >= 32
-            if (looksNamedForAi && looksHumanlyAwkward) result += name
+
+        // Strong naming + complexity evidence is sufficient for common cpu1..cpu63 systems.
+        definitions.filter { it.hinted && it.impractical }.forEach { result += it.name }
+
+        // Opaque names require a VarSet that ORs together several impractical commands.
+        blocks.forEach { block ->
+            if (varSetTarget(block) == null) return@forEach
+            val referenced = commandTriggerNameRegex.findAll(block.codeText)
+                .map { it.groupValues[1] }
+                .distinct()
+                .toList()
+            val suspicious = referenced.filter { name -> byName[name.lowercase()]?.impractical == true }
+            if (suspicious.size >= 4) {
+                result += suspicious
+            }
         }
+
         return result
     }
 
