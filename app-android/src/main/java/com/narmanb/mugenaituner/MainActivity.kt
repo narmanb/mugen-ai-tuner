@@ -18,6 +18,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,8 +33,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.narmanb.mugenaituner.core.AiBehavior
+import com.narmanb.mugenaituner.core.AiEditPlanner
+import com.narmanb.mugenaituner.core.BehaviorCategory
 import com.narmanb.mugenaituner.core.CharacterAnalysis
+import com.narmanb.mugenaituner.core.DifficultyPreset
+import com.narmanb.mugenaituner.core.DifficultyTuning
+import com.narmanb.mugenaituner.core.EditPlan
 import com.narmanb.mugenaituner.core.MugenAiAnalyzer
+import com.narmanb.mugenaituner.core.SkillProfile
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -55,6 +63,8 @@ private fun MugenAiTunerApp() {
     var analysis by remember { mutableStateOf<CharacterAnalysis?>(null) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var selectedPreset by remember { mutableStateOf(DifficultyPreset.NORMAL) }
+    var skillProfile by remember { mutableStateOf(SkillProfile.fromPreset(DifficultyPreset.NORMAL)) }
 
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -77,6 +87,8 @@ private fun MugenAiTunerApp() {
                     error = "No supported .def, .cmd, .cns, .st, .states, or .zss files were found in that folder."
                 } else {
                     analysis = MugenAiAnalyzer.analyze(files)
+                    selectedPreset = DifficultyPreset.NORMAL
+                    skillProfile = SkillProfile.fromPreset(DifficultyPreset.NORMAL)
                 }
             }.onFailure { throwable ->
                 error = throwable.message ?: "The character folder could not be analyzed."
@@ -138,6 +150,37 @@ private fun MugenAiTunerApp() {
         analysis?.let { result ->
             item { AnalysisSummary(result) }
 
+            if (result.aiDetected) {
+                val availableCategories = DifficultyTuning.adjustableCategories.filter { category ->
+                    result.behaviors.any { it.category == category }
+                }
+                val plan = AiEditPlanner.plan(result, skillProfile)
+
+                item {
+                    DifficultyControls(
+                        selectedPreset = selectedPreset,
+                        profile = skillProfile,
+                        availableCategories = availableCategories,
+                        onPresetSelected = { preset ->
+                            selectedPreset = preset
+                            if (preset != DifficultyPreset.CUSTOM) {
+                                skillProfile = SkillProfile.fromPreset(preset)
+                            }
+                        },
+                        onOverallChanged = { value ->
+                            selectedPreset = DifficultyPreset.CUSTOM
+                            skillProfile = skillProfile.withOverallSkill(value)
+                        },
+                        onCategoryChanged = { category, value ->
+                            selectedPreset = DifficultyPreset.CUSTOM
+                            skillProfile = skillProfile.withCategorySkill(category, value)
+                        },
+                    )
+                }
+
+                item { EditPlanPreview(plan) }
+            }
+
             if (result.aiFlags.isNotEmpty()) {
                 item {
                     Text("Traced AI variables", style = MaterialTheme.typography.titleMedium)
@@ -177,10 +220,119 @@ private fun MugenAiTunerApp() {
 
             item {
                 Text(
-                    "Difficulty presets, custom 0–100 behavior controls, preview/apply, and versioned backups are the next implementation layer. Automatic edits will only be offered for high-confidence code paths.",
+                    "Preview is analysis-only for now. Apply, versioned backups, undo, and restore will be enabled only after the file-write path is protected by backup verification.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun DifficultyControls(
+    selectedPreset: DifficultyPreset,
+    profile: SkillProfile,
+    availableCategories: List<BehaviorCategory>,
+    onPresetSelected: (DifficultyPreset) -> Unit,
+    onOverallChanged: (Int) -> Unit,
+    onCategoryChanged: (BehaviorCategory, Int) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Target AI difficulty", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "50% is the app's Normal target. Presets adjust all understood AI behavior together; Custom lets you tune detected categories individually.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                PresetButton(DifficultyPreset.EASY, selectedPreset, Modifier.weight(1f), onPresetSelected)
+                PresetButton(DifficultyPreset.NORMAL, selectedPreset, Modifier.weight(1f), onPresetSelected)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                PresetButton(DifficultyPreset.HARD, selectedPreset, Modifier.weight(1f), onPresetSelected)
+                PresetButton(DifficultyPreset.CUSTOM, selectedPreset, Modifier.weight(1f), onPresetSelected)
+            }
+
+            Text("Overall skill: ${profile.overallSkill}% — ${DifficultyTuning.labelFor(profile.overallSkill)}")
+            Slider(
+                value = profile.overallSkill.toFloat(),
+                onValueChange = { onOverallChanged(it.toInt()) },
+                valueRange = 0f..100f,
+                steps = 99,
+            )
+
+            if (selectedPreset == DifficultyPreset.CUSTOM && availableCategories.isNotEmpty()) {
+                Text("Custom behavior controls", style = MaterialTheme.typography.titleSmall)
+                availableCategories.forEach { category ->
+                    val value = profile.skillFor(category)
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("${categoryLabel(category)}: $value%")
+                        Text(
+                            DifficultyTuning.descriptionFor(category),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Slider(
+                            value = value.toFloat(),
+                            onValueChange = { onCategoryChanged(category, it.toInt()) },
+                            valueRange = 0f..100f,
+                            steps = 99,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PresetButton(
+    preset: DifficultyPreset,
+    selected: DifficultyPreset,
+    modifier: Modifier,
+    onPresetSelected: (DifficultyPreset) -> Unit,
+) {
+    if (preset == selected) {
+        Button(onClick = { onPresetSelected(preset) }, modifier = modifier) {
+            Text(preset.label)
+        }
+    } else {
+        OutlinedButton(onClick = { onPresetSelected(preset) }, modifier = modifier) {
+            Text(preset.label)
+        }
+    }
+}
+
+@Composable
+private fun EditPlanPreview(plan: EditPlan) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("Safe-change preview", style = MaterialTheme.typography.titleMedium)
+            Text("High-confidence automatic edits found: ${plan.edits.size}")
+            Text("AI behavior blocks intentionally left unchanged: ${plan.skippedBehaviorCount}")
+
+            plan.edits.take(8).forEach { edit ->
+                Text(
+                    "${categoryLabel(edit.category)} • ${edit.originalExpression} → ${edit.replacementExpression}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (plan.edits.size > 8) {
+                Text("+ ${plan.edits.size - 8} more proposed change(s)", style = MaterialTheme.typography.bodySmall)
+            }
+            plan.notes.forEach { note -> Text("• $note", style = MaterialTheme.typography.bodySmall) }
         }
     }
 }
@@ -209,10 +361,13 @@ private fun BehaviorCard(behavior: AiBehavior) {
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text(behavior.category.name.replace('_', ' '), style = MaterialTheme.typography.titleSmall)
+            Text(categoryLabel(behavior.category), style = MaterialTheme.typography.titleSmall)
             Text(behavior.summary)
             Text("Confidence: ${behavior.confidence}", style = MaterialTheme.typography.bodySmall)
             Text("${behavior.filePath}:${behavior.lineNumber} — [${behavior.section}]", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
+
+private fun categoryLabel(category: BehaviorCategory): String =
+    category.name.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
