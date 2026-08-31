@@ -8,20 +8,34 @@ import com.narmanb.mugenaituner.core.SourceGraphResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+class AmbiguousCharacterDefException(
+    val defPaths: List<String>,
+) : IllegalStateException(
+    "This character folder contains multiple possible active DEF files: ${defPaths.joinToString()}. Choose the active DEF before analysis so alternate modes are not mixed together.",
+)
+
 object CharacterFolderReader {
     private val supportedExtensions = setOf("def", "cmd", "cns", "st", "states", "zss")
     private const val maxFiles = 400
     private const val maxTextFileBytes = 4L * 1024L * 1024L
 
-    suspend fun read(context: Context, treeUri: Uri): List<SourceFile> = withContext(Dispatchers.IO) {
+    suspend fun read(
+        context: Context,
+        treeUri: Uri,
+        activeDefPath: String? = null,
+    ): List<SourceFile> = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, treeUri)
             ?: error("Android could not open the selected folder.")
         require(root.isDirectory) { "The selected item is not a folder." }
-        readDirectory(context, root)
+        readDirectory(context, root, activeDefPath)
     }
 
     /** Reads one character directory. Call from an IO dispatcher. */
-    internal fun readDirectory(context: Context, root: DocumentFile): List<SourceFile> {
+    internal fun readDirectory(
+        context: Context,
+        root: DocumentFile,
+        activeDefPath: String? = null,
+    ): List<SourceFile> {
         require(root.isDirectory) { "The selected item is not a folder." }
         val files = mutableListOf<SourceFile>()
 
@@ -52,21 +66,25 @@ object CharacterFolderReader {
 
         visit(root, "")
 
-        // Many character packs ship alternate/old DEF variants. When one DEF has the same base
-        // name as the selected character folder, prefer it as the active entry point instead of
-        // merging AI from every dormant variant. If no unique match exists, keep the conservative
-        // union behavior until a manual DEF selector is added.
         val defFiles = files.filter { it.path.endsWith(".def", ignoreCase = true) }
-        val folderName = root.name.orEmpty()
-        val preferredDef = defFiles.singleOrNull { def ->
-            def.path.substringAfterLast('/').substringBeforeLast('.').equals(folderName, ignoreCase = true)
-        }
-        val resolverInput = if (preferredDef != null) {
-            files.filter { file -> !file.path.endsWith(".def", ignoreCase = true) || file.path == preferredDef.path }
-        } else {
-            files
+        if (defFiles.isEmpty()) return files
+
+        val selectedDef = when {
+            activeDefPath != null -> defFiles.firstOrNull { it.path.equals(activeDefPath, ignoreCase = true) }
+                ?: error("Selected active DEF '$activeDefPath' no longer exists in this character folder.")
+            defFiles.size == 1 -> defFiles.single()
+            else -> {
+                val folderName = root.name.orEmpty()
+                val folderMatches = defFiles.filter { def ->
+                    def.path.substringAfterLast('/').substringBeforeLast('.').equals(folderName, ignoreCase = true)
+                }
+                when (folderMatches.size) {
+                    1 -> folderMatches.single()
+                    else -> throw AmbiguousCharacterDefException(defFiles.map { it.path }.sortedBy { it.lowercase() })
+                }
+            }
         }
 
-        return SourceGraphResolver.resolve(resolverInput).reachableFiles
+        return SourceGraphResolver.resolveFromDef(files, selectedDef.path).reachableFiles
     }
 }
