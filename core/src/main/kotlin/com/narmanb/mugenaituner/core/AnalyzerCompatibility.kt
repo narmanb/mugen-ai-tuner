@@ -13,6 +13,7 @@ data class AnalyzerCompatibility(
     val notes: List<String>,
     val understoodConfigurationParameters: Int = 0,
     val safeConfigurationParameters: Int = 0,
+    val configurationParameters: List<AiConfigurationParameter> = emptyList(),
 )
 
 object AnalyzerCompatibilityEstimator {
@@ -124,6 +125,7 @@ object AnalyzerCompatibilityEstimator {
             behaviorCount = behaviorTotal,
             understoodConfigurationParameters = highParameters + mediumParameters,
             safeConfigurationParameters = safeParameters,
+            configurationParameters = parameters,
             notes = buildList {
                 add("Compatibility measures analyzer confidence, not how strong the AI is.")
                 if (unresolved.isNotEmpty()) {
