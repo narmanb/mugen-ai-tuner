@@ -18,6 +18,7 @@ data class EditPlan(
     val edits: List<PlannedEdit>,
     val skippedBehaviorCount: Int,
     val notes: List<String>,
+    val engineDifficultyScaling: Boolean = false,
 ) {
     val isEmpty: Boolean get() = edits.isEmpty()
 }
@@ -28,13 +29,23 @@ object AiEditPlanner {
         """(?i)(random[^\n]*ailevel|ailevel[^\n]*random|ailevel\s*[+\-*/]|[+\-*/]\s*ailevel)""",
     )
 
+    fun plan(analysis: CharacterAnalysis, profile: SkillProfile): EditPlan =
+        plan(analysis, profile, engineDifficultyScaling = false)
+
     /**
-     * Builds a preview-only plan. The first implementation is deliberately conservative:
-     * only high-confidence AI blocks with simple Random < N / Random <= N expressions
-     * are proposed for automatic adjustment. More complex expressions remain visible to
-     * the analyzer but are not rewritten automatically.
+     * Builds a conservative edit plan. Only high-confidence AI blocks with simple
+     * Random < N / Random <= N expressions are considered automatically writable.
+     *
+     * When [engineDifficultyScaling] is enabled, AILevel 4 is treated as the selected target
+     * profile, levels 1-3 scale below it, and levels 5-8 interpolate back toward the character's
+     * original probability. This makes IKEMEN/MUGEN 1.0+ difficulty useful without blindly
+     * multiplying every Random expression in the character.
      */
-    fun plan(analysis: CharacterAnalysis, profile: SkillProfile): EditPlan {
+    fun plan(
+        analysis: CharacterAnalysis,
+        profile: SkillProfile,
+        engineDifficultyScaling: Boolean,
+    ): EditPlan {
         val normalized = profile.normalized()
         val edits = mutableListOf<PlannedEdit>()
         var skipped = 0
@@ -64,17 +75,26 @@ object AiEditPlanner {
             matches.forEach { match ->
                 val operator = match.groupValues[1]
                 val original = match.groupValues[2].toIntOrNull() ?: return@forEach
-                val replacement = (original * factor).roundToInt().coerceIn(1, 999)
-                if (replacement == original) return@forEach
+                val target = (original * factor).roundToInt().coerceIn(1, 999)
+                val replacementExpression = if (engineDifficultyScaling) {
+                    engineScaledExpression(operator, target, original)
+                } else {
+                    "Random $operator $target"
+                }
+                if (!engineDifficultyScaling && target == original) return@forEach
 
                 edits += PlannedEdit(
                     category = behavior.category,
                     filePath = behavior.filePath,
                     sourceLine = behavior.lineNumber,
                     originalExpression = match.value,
-                    replacementExpression = "Random $operator $replacement",
+                    replacementExpression = replacementExpression,
                     confidence = behavior.confidence,
-                    reason = "Adjust ${behavior.category.name.lowercase().replace('_', ' ')} decision frequency toward ${skill}% (${DifficultyTuning.labelFor(skill)}).",
+                    reason = if (engineDifficultyScaling) {
+                        "Scale ${behavior.category.name.lowercase().replace('_', ' ')} around ${skill}% (${DifficultyTuning.labelFor(skill)}) at AILevel 4, rising toward the original behavior at AILevel 8."
+                    } else {
+                        "Adjust ${behavior.category.name.lowercase().replace('_', ' ')} decision frequency toward ${skill}% (${DifficultyTuning.labelFor(skill)})."
+                    },
                 )
             }
         }
@@ -86,9 +106,19 @@ object AiEditPlanner {
             notes = buildList {
                 if (skipped > 0) add("$skipped analyzed AI behavior block(s) were left unchanged because their rewrite was not yet considered safe enough.")
                 if (edits.isEmpty() && analysis.aiDetected) add("AI was detected, but no high-confidence simple probability edits are currently safe to apply automatically.")
+                if (engineDifficultyScaling && edits.isNotEmpty()) {
+                    add("IKEMEN/MUGEN AILevel scaling is enabled: AILevel 4 targets the selected skill, 1-3 are weaker, and 5-8 move toward the character's original probability.")
+                }
                 add("This plan is a preview. File writes and backups are handled separately so analysis never modifies a character by itself.")
             },
+            engineDifficultyScaling = engineDifficultyScaling,
         )
+    }
+
+    internal fun engineScaledExpression(operator: String, target: Int, original: Int): String {
+        val safeTarget = target.coerceIn(1, 999)
+        val safeOriginal = original.coerceIn(safeTarget, 999)
+        return "Random $operator ifelse(AILevel <= 4, $safeTarget * AILevel / 4.0, $safeTarget + ($safeOriginal - $safeTarget) * (AILevel - 4) / 4.0)"
     }
 
     /**
