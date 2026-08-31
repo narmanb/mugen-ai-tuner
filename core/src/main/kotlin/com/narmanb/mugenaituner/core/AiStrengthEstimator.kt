@@ -21,8 +21,6 @@ data class AiStrengthEstimate(
  * reactive AI, not as a measured win-rate or frame-perfect skill rating.
  */
 object AiStrengthEstimator {
-    private val simpleRandom = Regex("""(?i)\brandom\s*(<=|>=|<|>)\s*(1000|\d{1,3})\b""")
-
     fun estimate(analysis: CharacterAnalysis): AiStrengthEstimate {
         if (!analysis.aiDetected) {
             return AiStrengthEstimate(
@@ -38,13 +36,12 @@ object AiStrengthEstimator {
         val evidence = mutableListOf<Evidence>()
         for (behavior in analysis.behaviors) {
             if (behavior.confidence == Confidence.LOW || behavior.confidence == Confidence.UNKNOWN) continue
-            for (match in simpleRandom.findAll(behavior.rawCode)) {
-                val threshold = match.groupValues[2].toIntOrNull() ?: continue
-                val chance = StandardizedAiCalibration.activationChance(
-                    operator = match.groupValues[1],
-                    threshold = threshold,
+            for (decision in RandomProbabilityParser.findAll(behavior.rawCode)) {
+                evidence += Evidence(
+                    category = behavior.category,
+                    chance = decision.activationChance,
+                    confidence = behavior.confidence,
                 )
-                evidence += Evidence(behavior.category, chance, behavior.confidence)
             }
         }
 
