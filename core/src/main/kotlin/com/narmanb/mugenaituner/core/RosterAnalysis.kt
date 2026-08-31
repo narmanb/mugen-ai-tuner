@@ -14,9 +14,23 @@ data class RosterCharacterSummary(
     val mediumConfidenceBehaviorCount: Int,
 )
 
+enum class RosterSkipReason {
+    NEEDS_DEF_SELECTION,
+    NO_DEF,
+    UNREADABLE,
+    ANALYSIS_ERROR,
+}
+
+data class RosterSkippedFolder(
+    val folderName: String,
+    val reason: RosterSkipReason,
+    val detail: String,
+)
+
 data class RosterAnalysisSummary(
     val characters: List<RosterCharacterSummary>,
     val skippedFolders: List<String>,
+    val skippedDetails: List<RosterSkippedFolder> = emptyList(),
 ) {
     val customAiCount: Int get() = characters.count { it.aiDetected }
     val difficultyInsensitiveCount: Int get() = characters.count {
@@ -24,6 +38,9 @@ data class RosterAnalysisSummary(
     }
     val estimatedHardOrBrutalCount: Int get() = characters.count {
         (it.estimatedStrength ?: -1) >= 61
+    }
+    val needsDefSelectionCount: Int get() = skippedDetails.count {
+        it.reason == RosterSkipReason.NEEDS_DEF_SELECTION
     }
 }
 
