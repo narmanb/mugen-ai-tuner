@@ -7,6 +7,9 @@ object MugenAiAnalyzer {
     private val directVarAssignmentRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)\s*:?=""")
     private val randomThresholdRegex = Regex("""(?i)\brandom\s*(?:<|<=|>|>=)\s*\d+""")
     private val commandTriggerNameRegex = Regex("""(?i)\bcommand\s*=\s*\"([^\"]+)\"""")
+    private val legacyAiNameHintRegex = Regex(
+        """(?i)(?:^(?:ai|cpu|computer)\d*$|(?:^|[_\-\s])(?:ai|cpu|computer)(?:\d+)?(?:$|[_\-\s]))""",
+    )
     private val scaledAiLevelRegex = Regex(
         """(?i)(ailevel\s*[+\-*/]|[+\-*/]\s*ailevel|ailevel\s*(?:>=|>|==|=|<=|<)\s*[1-8]\b)""",
     )
@@ -221,15 +224,13 @@ object MugenAiAnalyzer {
                 val values = block.assignments()
                 val name = values["name"]?.trim('"') ?: return@mapNotNull null
                 val command = values["command"]?.trim('"').orEmpty()
-                val lowerName = name.lowercase()
-                val hinted = lowerName.contains("ai") ||
-                    lowerName.contains("cpu") ||
-                    lowerName.contains("computer")
+                val hinted = legacyAiNameHintRegex.containsMatchIn(name)
                 val separators = command.count { it == '+' || it == ',' }
+                val commandLower = command.lowercase()
                 val directionalContradiction = Regex("""(?i)(?:^|[, +])(?:u|d|f|b)[, +]+(?:u|d|f|b)(?:$|[, +])""")
                     .containsMatchIn(command) &&
-                    (("u" in command.lowercase() && "d" in command.lowercase()) ||
-                        ("f" in command.lowercase() && "b" in command.lowercase()))
+                    (("u" in commandLower && "d" in commandLower) ||
+                        ("f" in commandLower && "b" in commandLower))
                 val impractical = separators >= 7 || command.length >= 32 || directionalContradiction
                 CommandEvidence(name, command, hinted, impractical)
             }
