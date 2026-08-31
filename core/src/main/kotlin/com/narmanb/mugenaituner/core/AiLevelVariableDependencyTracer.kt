@@ -43,21 +43,19 @@ object AiLevelVariableDependencyTracer {
         do {
             changed = false
             for (candidate in candidates) {
+                if (candidate.key in known) continue
+
                 val expanded = expand(candidate.expression, known)
                 if (!carriesNumericDifficulty(expanded)) continue
 
-                val replacement = Dependency(
+                known[candidate.key] = Dependency(
                     kind = candidate.key.kind,
                     variable = candidate.key.index,
                     expandedExpression = expanded,
                     filePath = candidate.filePath,
                     lineNumber = candidate.lineNumber,
                 )
-                val previous = known[candidate.key]
-                if (previous == null || previous.expandedExpression != replacement.expandedExpression) {
-                    known[candidate.key] = replacement
-                    changed = true
-                }
+                changed = true
             }
         } while (changed)
 
@@ -90,7 +88,6 @@ object AiLevelVariableDependencyTracer {
             )
         }
 
-        var blockStart = 0
         var blockLines = mutableListOf<Pair<Int, String>>()
 
         fun flushBlock() {
@@ -103,7 +100,6 @@ object AiLevelVariableDependencyTracer {
             val code = stripComment(raw).trim()
             if (sectionRegex.containsMatchIn(code)) {
                 flushBlock()
-                blockStart = index + 1
             } else if (code.isNotEmpty()) {
                 blockLines += (index + 1) to code
             }
