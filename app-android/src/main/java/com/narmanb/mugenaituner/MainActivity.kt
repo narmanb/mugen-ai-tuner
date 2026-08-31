@@ -20,6 +20,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -33,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.narmanb.mugenaituner.core.AiBehavior
 import com.narmanb.mugenaituner.core.AiEditMaterializer
@@ -42,9 +44,11 @@ import com.narmanb.mugenaituner.core.BehaviorCategory
 import com.narmanb.mugenaituner.core.CharacterAnalysis
 import com.narmanb.mugenaituner.core.CharacterFingerprint
 import com.narmanb.mugenaituner.core.CharacterFingerprinter
+import com.narmanb.mugenaituner.core.CharacterHealthValidator
 import com.narmanb.mugenaituner.core.DifficultyPreset
 import com.narmanb.mugenaituner.core.DifficultyTuning
 import com.narmanb.mugenaituner.core.EditPlan
+import com.narmanb.mugenaituner.core.HealthIssue
 import com.narmanb.mugenaituner.core.MaterializedEditPlan
 import com.narmanb.mugenaituner.core.MugenAiAnalyzer
 import com.narmanb.mugenaituner.core.SkillProfile
@@ -86,6 +90,7 @@ private fun MugenAiTunerApp() {
     var selectedPreset by remember { mutableStateOf(DifficultyPreset.NORMAL) }
     var skillProfile by remember { mutableStateOf(SkillProfile.fromPreset(DifficultyPreset.NORMAL)) }
     var engineDifficultyScaling by remember { mutableStateOf(false) }
+    var behaviorSearch by remember { mutableStateOf("") }
 
     suspend fun refreshFromDisk(uri: Uri, resetDifficulty: Boolean) {
         val files = CharacterFolderReader.read(context, uri)
@@ -126,6 +131,7 @@ private fun MugenAiTunerApp() {
             selectedPreset = DifficultyPreset.NORMAL
             skillProfile = SkillProfile.fromPreset(DifficultyPreset.NORMAL)
             engineDifficultyScaling = false
+            behaviorSearch = ""
         }
     }
 
@@ -234,6 +240,16 @@ private fun MugenAiTunerApp() {
                     desiredFromBaseline = desiredFromBaseline,
                 )
                 val currentSnapshot = matchingSnapshot
+                val mutationByPath = materialized.mutations.associateBy { it.relativePath }
+                val proposedFiles = analyzedFiles.map { file ->
+                    mutationByPath[file.path]?.let { mutation -> file.copy(content = mutation.afterContent) } ?: file
+                }
+                val introducedHealthErrors = CharacterHealthValidator.introducedErrors(
+                    before = CharacterHealthValidator.validate(analyzedFiles),
+                    after = CharacterHealthValidator.validate(proposedFiles),
+                )
+                val baselineFingerprint = CharacterFingerprinter.fingerprint(tuningBaselineFiles)
+                val currentlyOriginal = analyzedFingerprint?.let { !it.differsFrom(baselineFingerprint) } ?: false
 
                 item {
                     DifficultyControls(
@@ -261,7 +277,7 @@ private fun MugenAiTunerApp() {
                     )
                 }
 
-                item { EditPlanPreview(plan, materialized) }
+                item { EditPlanPreview(plan, materialized, introducedHealthErrors) }
 
                 item {
                     Card(modifier = Modifier.fillMaxWidth()) {
@@ -324,10 +340,47 @@ private fun MugenAiTunerApp() {
                                         applying = false
                                     }
                                 },
-                                enabled = !applying && baselineError == null && materialized.isSafeToApply,
+                                enabled = !applying && baselineError == null && materialized.isSafeToApply && introducedHealthErrors.isEmpty(),
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Text("Apply safe changes")
+                            }
+
+                            if (baselineHistoryDepth > 0) {
+                                OutlinedButton(
+                                    onClick = {
+                                        val uri = selectedTreeUri ?: return@OutlinedButton
+                                        scope.launch {
+                                            applying = true
+                                            error = null
+                                            actionMessage = null
+                                            runCatching {
+                                                OriginalRestoreTransaction.restore(
+                                                    context = context,
+                                                    treeUri = uri,
+                                                    characterName = result.characterName,
+                                                )
+                                            }.onSuccess { restore ->
+                                                actionMessage = "Restored the verified original pre-tuner state across ${restore.changedFileCount} file(s), tracing ${restore.traversedBackupCount} backup snapshot(s). A safety backup was created at ${restore.backupLocation}."
+                                                runCatching { refreshFromDisk(uri, resetDifficulty = false) }
+                                                    .onFailure { error = it.message ?: "Original restore succeeded, but re-analysis failed." }
+                                            }.onFailure { throwable ->
+                                                error = throwable.message ?: "The original pre-tuner state could not be restored."
+                                            }
+                                            applying = false
+                                        }
+                                    },
+                                    enabled = !applying && baselineError == null && !currentlyOriginal,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Restore original pre-tuner state")
+                                }
+                                if (currentlyOriginal) {
+                                    Text(
+                                        "The verified original pre-tuner state is currently active.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
                             }
 
                             if (currentSnapshot != null) {
@@ -386,9 +439,42 @@ private fun MugenAiTunerApp() {
             if (result.behaviors.isNotEmpty()) {
                 item {
                     Text("Detected AI behavior", style = MaterialTheme.typography.titleMedium)
+                    OutlinedTextField(
+                        value = behaviorSearch,
+                        onValueChange = { behaviorSearch = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        singleLine = true,
+                        label = { Text("Search AI behavior") },
+                        placeholder = { Text("Guard, projectile, combo, filename…") },
+                    )
                 }
-                items(result.behaviors) { behavior ->
-                    BehaviorCard(behavior)
+
+                val filteredBehaviors = result.behaviors.filter { behavior ->
+                    if (behaviorSearch.isBlank()) {
+                        true
+                    } else {
+                        val needle = behaviorSearch.trim().lowercase()
+                        categoryLabel(behavior.category).lowercase().contains(needle) ||
+                            behavior.summary.lowercase().contains(needle) ||
+                            behavior.filePath.lowercase().contains(needle) ||
+                            behavior.section.lowercase().contains(needle) ||
+                            behavior.rawCode.lowercase().contains(needle)
+                    }
+                }
+
+                if (filteredBehaviors.isEmpty()) {
+                    item {
+                        Text("No detected AI behaviors match this search.", style = MaterialTheme.typography.bodySmall)
+                    }
+                } else {
+                    items(
+                        items = filteredBehaviors,
+                        key = { behavior -> "${behavior.filePath}:${behavior.lineNumber}:${behavior.category}:${behavior.rawCode.hashCode()}" },
+                    ) { behavior ->
+                        BehaviorCard(behavior)
+                    }
                 }
             }
 
@@ -514,7 +600,11 @@ private fun PresetButton(
 }
 
 @Composable
-private fun EditPlanPreview(plan: EditPlan, materialized: MaterializedEditPlan) {
+private fun EditPlanPreview(
+    plan: EditPlan,
+    materialized: MaterializedEditPlan,
+    introducedHealthErrors: List<HealthIssue>,
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -525,6 +615,16 @@ private fun EditPlanPreview(plan: EditPlan, materialized: MaterializedEditPlan) 
             Text("Files that would change from the current state: ${materialized.mutations.size}")
             Text("Classified edits carried into target: ${materialized.mutations.sumOf { it.appliedEdits.size }}")
             Text("AI behavior blocks intentionally left unchanged: ${plan.skippedBehaviorCount}")
+
+            if (introducedHealthErrors.isEmpty()) {
+                Text("Pre-write structural health check: Passed", style = MaterialTheme.typography.bodySmall)
+            } else {
+                Text(
+                    "Pre-write structural health check: BLOCKED (${introducedHealthErrors.size} new error(s))",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
 
             plan.edits.take(8).forEach { edit ->
                 Text(
@@ -538,6 +638,13 @@ private fun EditPlanPreview(plan: EditPlan, materialized: MaterializedEditPlan) 
             plan.notes.forEach { note -> Text("• $note", style = MaterialTheme.typography.bodySmall) }
             materialized.errors.forEach { note ->
                 Text("• Write protection: $note", style = MaterialTheme.typography.bodySmall)
+            }
+            introducedHealthErrors.take(3).forEach { issue ->
+                Text(
+                    "• Health protection: ${issue.filePath}${issue.lineNumber?.let { ":$it" }.orEmpty()} — ${issue.message}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
         }
     }
@@ -562,6 +669,8 @@ private fun AnalysisSummary(result: CharacterAnalysis) {
 
 @Composable
 private fun BehaviorCard(behavior: AiBehavior) {
+    var expanded by remember(behavior.filePath, behavior.lineNumber, behavior.rawCode) { mutableStateOf(false) }
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(14.dp),
@@ -571,6 +680,16 @@ private fun BehaviorCard(behavior: AiBehavior) {
             Text(behavior.summary)
             Text("Confidence: ${behavior.confidence}", style = MaterialTheme.typography.bodySmall)
             Text("${behavior.filePath}:${behavior.lineNumber} — [${behavior.section}]", style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "Hide MUGEN code" else "Show MUGEN code")
+            }
+            if (expanded) {
+                Text(
+                    behavior.rawCode,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
         }
     }
 }
