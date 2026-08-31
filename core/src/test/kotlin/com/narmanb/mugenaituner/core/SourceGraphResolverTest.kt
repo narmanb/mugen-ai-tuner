@@ -37,6 +37,32 @@ class SourceGraphResolverTest {
     }
 
     @Test
+    fun constAndCdsFilesReferencedByDefAreReachable() {
+        val files = listOf(
+            SourceFile(
+                "char.def",
+                """
+                [Files]
+                cmd = char.cds
+                cns = data/char.const
+                st = states.zss
+                """.trimIndent(),
+            ),
+            SourceFile("char.cds", "[State -1, Guard]\ntrigger1 = AILevel > 0"),
+            SourceFile("data/char.const", "[Data]\nlife = 1000"),
+            SourceFile("states.zss", "[Statedef 1000]"),
+            SourceFile("old-ai.cds", "trigger1 = AILevel"),
+        )
+
+        val result = SourceGraphResolver.resolveFromDef(files, "char.def")
+        val reachable = result.reachableFiles.map { it.path }.toSet()
+
+        assertEquals(setOf("char.def", "char.cds", "data/char.const", "states.zss"), reachable)
+        assertEquals(listOf("old-ai.cds"), result.ignoredTextFiles.map { it.path })
+        assertTrue(result.unresolvedReferences.isEmpty())
+    }
+
+    @Test
     fun explicitDefKeepsAlternateModesIsolated() {
         val files = listOf(
             SourceFile("normal.def", "[Files]\ncmd = normal.cmd\nst = shared.st"),
