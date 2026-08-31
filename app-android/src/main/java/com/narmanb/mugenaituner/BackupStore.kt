@@ -40,6 +40,7 @@ internal object BackupStore {
         characterName: String,
         sourceTreeUri: Uri,
         originalFingerprint: CharacterFingerprint,
+        resultingFingerprint: CharacterFingerprint,
         mutations: List<FileMutation>,
         originals: List<OriginalFileBytes>,
         reason: String,
@@ -74,24 +75,16 @@ internal object BackupStore {
             )
         }
 
-        val fingerprintJson = JSONArray()
-        originalFingerprint.files.forEach { file ->
-            fingerprintJson.put(
-                JSONObject()
-                    .put("path", file.path)
-                    .put("sha256", file.sha256),
-            )
-        }
-
         val manifest = JSONObject()
-            .put("schemaVersion", 1)
+            .put("schemaVersion", 2)
             .put("status", "prepared")
             .put("characterName", characterName)
             .put("snapshotId", snapshotId)
             .put("createdAtEpochMillis", System.currentTimeMillis())
             .put("reason", reason)
             .put("sourceTreeUri", sourceTreeUri.toString())
-            .put("originalCharacterFingerprint", fingerprintJson)
+            .put("beforeCharacterFingerprint", fingerprintJson(originalFingerprint))
+            .put("afterCharacterFingerprint", fingerprintJson(resultingFingerprint))
             .put("files", entries)
 
         val manifestText = manifest.toString(2)
@@ -124,6 +117,16 @@ internal object BackupStore {
             }
             prepared.manifestFile != null -> prepared.manifestFile.writeText(updated, Charsets.UTF_8)
             else -> error("Backup manifest has no writable destination.")
+        }
+    }
+
+    private fun fingerprintJson(fingerprint: CharacterFingerprint): JSONArray = JSONArray().also { array ->
+        fingerprint.files.forEach { file ->
+            array.put(
+                JSONObject()
+                    .put("path", file.path)
+                    .put("sha256", file.sha256),
+            )
         }
     }
 
