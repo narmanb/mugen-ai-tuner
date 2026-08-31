@@ -3,9 +3,9 @@ package com.narmanb.mugenaituner.core
 object MugenAiAnalyzer {
     private val sectionRegex = Regex("""^\s*\[([^]]+)]""")
     private val assignmentRegex = Regex("""^\s*([^=]+?)\s*=\s*(.*?)\s*$""")
-    private val varReferenceRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)""")
-    private val assignedVarKeyRegex = Regex("""(?i)^var\s*\(\s*(\d+)\s*\)$""")
-    private val directVarAssignmentRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)\s*:=\s*(.+)$""")
+    private val variableReferenceRegex = Regex("""(?i)\b(f?var)\s*\(\s*(\d+)\s*\)""")
+    private val assignedVariableKeyRegex = Regex("""(?i)^(f?var)\s*\(\s*(\d+)\s*\)$""")
+    private val directVariableAssignmentRegex = Regex("""(?i)\b(f?var)\s*\(\s*(\d+)\s*\)\s*:=\s*(.+)$""")
     private val commandTriggerNameRegex = Regex("""(?i)\bcommand\s*=\s*\"([^\"]+)\"""")
     private val legacyAiNameHintRegex = Regex(
         """(?i)(?:^(?:ai|cpu|computer)\d*$|(?:^|[_\-\s])(?:ai|cpu|computer)(?:\d+)?(?:$|[_\-\s]))""",
@@ -37,8 +37,8 @@ object MugenAiAnalyzer {
         val metadata = readMetadata(files)
         val aiCommandNames = findLegacyAiCommands(blocks)
         val flags = traceAiFlags(blocks, aiCommandNames)
-        val flagNumbers = flags.map { it.variable }.toSet()
-        val configurationParameters = detectConfigurationParameters(blocks, flagNumbers)
+        val flagKeys = flags.map { VariableKey(it.kind, it.variable) }.toSet()
+        val configurationParameters = detectConfigurationParameters(blocks, flagKeys)
         val behaviors = mutableListOf<AiBehavior>()
         var scaledCount = 0
 
@@ -47,9 +47,8 @@ object MugenAiAnalyzer {
 
             val joined = block.codeText.lowercase()
             val directAiConfidence = AiLevelSignalClassifier.classifyCodeBlock(block.codeText)
-            val referencedFlags = varReferenceRegex.findAll(joined)
-                .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
-                .filter { it in flagNumbers }
+            val referencedFlags = variableReferences(block.codeText)
+                .filter { it in flagKeys }
                 .toSet()
             val legacyCommand = aiCommandNames.any { command ->
                 Regex("""(?i)\bcommand\s*=\s*[\"]?${Regex.escape(command)}[\"]?""").containsMatchIn(joined)
@@ -58,18 +57,20 @@ object MugenAiAnalyzer {
             if (directAiConfidence == null && referencedFlags.isEmpty() && !legacyCommand) continue
             if (isPureAiActivationBlock(block)) continue
 
+            val highFlagReference = referencedFlags.any { key ->
+                flags.any { it.kind == key.kind && it.variable == key.index && it.confidence == Confidence.HIGH }
+            }
             val confidence = when {
-                directAiConfidence != null -> directAiConfidence
-                referencedFlags.any { number -> flags.any { it.variable == number && it.confidence == Confidence.HIGH } } -> Confidence.HIGH
-                referencedFlags.isNotEmpty() -> Confidence.MEDIUM
-                legacyCommand -> Confidence.MEDIUM
+                directAiConfidence == Confidence.HIGH || highFlagReference -> Confidence.HIGH
+                directAiConfidence == Confidence.MEDIUM || referencedFlags.isNotEmpty() || legacyCommand -> Confidence.MEDIUM
+                directAiConfidence == Confidence.LOW -> Confidence.LOW
                 else -> Confidence.LOW
             }
 
             val category = AiBehaviorClassifier.classify(block.codeText, block.section)
             val firstRelevant = block.lines.firstOrNull {
                 val lower = it.code.lowercase()
-                "ailevel" in lower || varReferenceRegex.containsMatchIn(lower) || "command" in lower
+                "ailevel" in lower || variableReferenceRegex.containsMatchIn(lower) || "command" in lower
             } ?: block.lines.firstOrNull()
 
             if (AiLevelDifficultyScaling.hasNumericScaling(block.codeText)) scaledCount++
@@ -98,7 +99,7 @@ object MugenAiAnalyzer {
                 add("${unresolvedSourceReferences.size} referenced character-code file(s) could not be resolved; analysis completeness is reduced.")
             }
             if (flags.isNotEmpty()) {
-                add("AI-related variables were traced from their activation logic instead of assuming a fixed variable number such as var(59).")
+                add("AI-related integer/float variables were traced from their activation logic instead of assuming a fixed variable such as var(59).")
             }
             if (configurationParameters.isNotEmpty()) {
                 add("Author-exposed packed AI configuration was detected separately from ordinary probability decisions.")
@@ -127,7 +128,7 @@ object MugenAiAnalyzer {
             characterName = metadata.first,
             author = metadata.second,
             aiDetected = aiDetected,
-            aiFlags = flags.sortedBy { it.variable },
+            aiFlags = flags.sortedWith(compareBy<AiFlag> { it.kind.ordinal }.thenBy { it.variable }),
             behaviors = distinctBehaviors,
             difficultyResponsiveness = responsiveness,
             directlyScaledBehaviorCount = scaledCount,
@@ -170,22 +171,25 @@ object MugenAiAnalyzer {
     }
 
     private fun traceAiFlags(blocks: List<ParsedBlock>, aiCommandNames: Set<String>): List<AiFlag> {
-        val flags = linkedMapOf<Int, AiFlag>()
+        val flags = linkedMapOf<VariableKey, AiFlag>()
 
         for (block in blocks) {
             for (line in block.lines) {
-                val assignment = directVarAssignmentRegex.find(line.code) ?: continue
-                val variable = assignment.groupValues[1].toIntOrNull() ?: continue
-                val rightHandSide = assignment.groupValues[2]
+                val assignment = directVariableAssignmentRegex.find(line.code) ?: continue
+                val kind = variableKind(assignment.groupValues[1])
+                val variable = assignment.groupValues[2].toIntOrNull() ?: continue
+                val rightHandSide = assignment.groupValues[3]
                 val signalConfidence = AiLevelSignalClassifier.classifyExpression(rightHandSide) ?: continue
-                flags[variable] = AiFlag(
-                    variable,
-                    signalConfidence,
-                    if (signalConfidence == Confidence.HIGH) {
+                val key = VariableKey(kind, variable)
+                flags[key] = AiFlag(
+                    variable = variable,
+                    confidence = signalConfidence,
+                    reason = if (signalConfidence == Confidence.HIGH) {
                         "Assigned directly from an AI-positive AILevel expression using :=."
                     } else {
                         "Direct := assignment depends on AILevel, but the expression is not a proven AI on/off signal."
                     },
+                    kind = kind,
                 )
             }
         }
@@ -194,22 +198,25 @@ object MugenAiAnalyzer {
             val write = variableControllerTarget(block) ?: return@forEach
             val signalConfidence = AiLevelSignalClassifier.classifyCodeBlock(block.codeText)
             val joined = block.codeText.lowercase()
+            val key = VariableKey(write.kind, write.variable)
             when {
-                signalConfidence != null -> flags[write.variable] = AiFlag(
-                    write.variable,
-                    signalConfidence,
-                    if (signalConfidence == Confidence.HIGH) {
+                signalConfidence != null -> flags[key] = AiFlag(
+                    variable = write.variable,
+                    confidence = signalConfidence,
+                    reason = if (signalConfidence == Confidence.HIGH) {
                         "${write.controllerType} is controlled by AI-positive AILevel logic."
                     } else {
                         "${write.controllerType} depends on AILevel, but not as a proven AI-only gate."
                     },
+                    kind = write.kind,
                 )
                 aiCommandNames.any { command -> commandReferenced(joined, command) } -> flags.putIfAbsent(
-                    write.variable,
+                    key,
                     AiFlag(
-                        write.variable,
-                        Confidence.MEDIUM,
-                        "${write.controllerType} is controlled by a likely legacy AI-only command set.",
+                        variable = write.variable,
+                        confidence = Confidence.MEDIUM,
+                        reason = "${write.controllerType} is controlled by a likely legacy AI-only command set.",
+                        kind = write.kind,
                     ),
                 )
             }
@@ -222,18 +229,19 @@ object MugenAiAnalyzer {
 
             for (block in blocks) {
                 for (line in block.lines) {
-                    val assignment = directVarAssignmentRegex.find(line.code) ?: continue
-                    val target = assignment.groupValues[1].toIntOrNull() ?: continue
+                    val assignment = directVariableAssignmentRegex.find(line.code) ?: continue
+                    val target = VariableKey(
+                        kind = variableKind(assignment.groupValues[1]),
+                        index = assignment.groupValues[2].toIntOrNull() ?: continue,
+                    )
                     if (target in known) continue
-                    val rightHandSide = assignment.groupValues[2]
-                    val referencesKnown = varReferenceRegex.findAll(rightHandSide)
-                        .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
-                        .any { it in known }
-                    if (referencesKnown) {
+                    val rightHandSide = assignment.groupValues[3]
+                    if (variableReferences(rightHandSide).any { it in known }) {
                         flags[target] = AiFlag(
-                            target,
-                            Confidence.MEDIUM,
-                            "Direct := assignment depends on another variable already traced to AI activation.",
+                            variable = target.index,
+                            confidence = Confidence.MEDIUM,
+                            reason = "Direct := assignment depends on another variable already traced to AI activation.",
+                            kind = target.kind,
                         )
                         changed = true
                     }
@@ -243,15 +251,14 @@ object MugenAiAnalyzer {
             val knownAfterDirectAssignments = flags.keys.toSet()
             blocks.forEach { block ->
                 val write = variableControllerTarget(block) ?: return@forEach
-                if (write.variable in knownAfterDirectAssignments) return@forEach
-                val refs = varReferenceRegex.findAll(block.codeText)
-                    .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
-                    .toSet()
-                if (refs.any { it in knownAfterDirectAssignments }) {
-                    flags[write.variable] = AiFlag(
-                        write.variable,
-                        Confidence.MEDIUM,
-                        "${write.controllerType} is gated by another variable already traced to AI activation.",
+                val target = VariableKey(write.kind, write.variable)
+                if (target in knownAfterDirectAssignments) return@forEach
+                if (variableReferences(block.codeText).any { it in knownAfterDirectAssignments }) {
+                    flags[target] = AiFlag(
+                        variable = write.variable,
+                        confidence = Confidence.MEDIUM,
+                        reason = "${write.controllerType} is gated by another variable already traced to AI activation.",
+                        kind = write.kind,
                     )
                     changed = true
                 }
@@ -263,19 +270,18 @@ object MugenAiAnalyzer {
 
     private fun detectConfigurationParameters(
         blocks: List<ParsedBlock>,
-        aiVariables: Set<Int>,
+        aiVariables: Set<VariableKey>,
     ): List<AiConfigurationParameter> {
         val parameters = mutableListOf<AiConfigurationParameter>()
 
         blocks.forEach { block ->
             val write = variableControllerTarget(block) ?: return@forEach
+            if (write.kind != VariableKind.VAR) return@forEach
             if (!write.controllerType.equals("VarAdd", ignoreCase = true)) return@forEach
 
-            val joined = block.codeText.lowercase()
-            val referencesKnownAi = varReferenceRegex.findAll(joined)
-                .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
-                .any { it in aiVariables }
-            if (write.variable !in aiVariables && AiLevelSignalClassifier.classifyCodeBlock(block.codeText) == null && !referencesKnownAi) return@forEach
+            val writeKey = VariableKey(write.kind, write.variable)
+            val referencesKnownAi = variableReferences(block.codeText).any { it in aiVariables }
+            if (writeKey !in aiVariables && AiLevelSignalClassifier.classifyCodeBlock(block.codeText) == null && !referencesKnownAi) return@forEach
 
             val values = block.assignments()
             val valueExpression = values["value"] ?: return@forEach
@@ -283,6 +289,7 @@ object MugenAiAnalyzer {
             val level = (levelMatch.groupValues[1].ifBlank { levelMatch.groupValues[2] }).toIntOrNull()
                 ?: return@forEach
 
+            val joined = block.codeText.lowercase()
             val raw = block.lines.joinToString("\n") { it.raw }
             val context = (block.section + "\n" + raw).lowercase()
             val escapedVariable = Regex.escape(write.variable.toString())
@@ -391,8 +398,6 @@ object MugenAiAnalyzer {
         val byName = definitions.associateBy { it.name.lowercase() }
         val result = linkedSetOf<String>()
 
-        // Winane-style XOR activation is structurally distinctive enough to treat the involved
-        // command names as likely legacy AI commands, but downstream flags remain medium-confidence.
         blocks.forEach { block ->
             result += LegacyXorAiDetector.detectCommandNames(block.codeText)
         }
@@ -422,15 +427,30 @@ object MugenAiAnalyzer {
         ) return null
 
         values["v"]?.trim()?.toIntOrNull()?.let { variable ->
-            return VariableWrite(variable, controllerType)
+            return VariableWrite(variable, controllerType, VariableKind.VAR)
+        }
+        values["fv"]?.trim()?.toIntOrNull()?.let { variable ->
+            return VariableWrite(variable, controllerType, VariableKind.FVAR)
         }
 
         values.keys.forEach { key ->
-            val variable = assignedVarKeyRegex.matchEntire(key)?.groupValues?.getOrNull(1)?.toIntOrNull()
-            if (variable != null) return VariableWrite(variable, controllerType)
+            val match = assignedVariableKeyRegex.matchEntire(key) ?: return@forEach
+            val variable = match.groupValues[2].toIntOrNull() ?: return@forEach
+            return VariableWrite(variable, controllerType, variableKind(match.groupValues[1]))
         }
         return null
     }
+
+    private fun variableReferences(code: String): Set<VariableKey> =
+        variableReferenceRegex.findAll(code)
+            .mapNotNull { match ->
+                val index = match.groupValues[2].toIntOrNull() ?: return@mapNotNull null
+                VariableKey(variableKind(match.groupValues[1]), index)
+            }
+            .toSet()
+
+    private fun variableKind(token: String): VariableKind =
+        if (token.equals("fvar", ignoreCase = true)) VariableKind.FVAR else VariableKind.VAR
 
     private fun isPureAiActivationBlock(block: ParsedBlock): Boolean {
         val values = block.assignments()
@@ -521,9 +541,15 @@ object MugenAiAnalyzer {
     private fun commandReferenced(joined: String, command: String): Boolean =
         Regex("""(?i)\bcommand\s*=\s*[\"]?${Regex.escape(command)}[\"]?""").containsMatchIn(joined)
 
+    private data class VariableKey(
+        val kind: VariableKind,
+        val index: Int,
+    )
+
     private data class VariableWrite(
         val variable: Int,
         val controllerType: String,
+        val kind: VariableKind,
     )
 
     private data class CodeLine(
