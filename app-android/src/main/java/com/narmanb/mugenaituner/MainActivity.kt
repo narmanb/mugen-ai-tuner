@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -79,6 +80,7 @@ private fun MugenAiTunerApp() {
     var actionMessage by remember { mutableStateOf<String?>(null) }
     var selectedPreset by remember { mutableStateOf(DifficultyPreset.NORMAL) }
     var skillProfile by remember { mutableStateOf(SkillProfile.fromPreset(DifficultyPreset.NORMAL)) }
+    var engineDifficultyScaling by remember { mutableStateOf(false) }
 
     suspend fun refreshFromDisk(uri: Uri, resetDifficulty: Boolean) {
         val files = CharacterFolderReader.read(context, uri)
@@ -102,6 +104,7 @@ private fun MugenAiTunerApp() {
         if (resetDifficulty) {
             selectedPreset = DifficultyPreset.NORMAL
             skillProfile = SkillProfile.fromPreset(DifficultyPreset.NORMAL)
+            engineDifficultyScaling = false
         }
     }
 
@@ -197,7 +200,11 @@ private fun MugenAiTunerApp() {
                 val availableCategories = DifficultyTuning.adjustableCategories.filter { category ->
                     result.behaviors.any { it.category == category }
                 }
-                val plan = AiEditPlanner.plan(result, skillProfile)
+                val plan = AiEditPlanner.plan(
+                    analysis = result,
+                    profile = skillProfile,
+                    engineDifficultyScaling = engineDifficultyScaling,
+                )
                 val materialized = AiEditMaterializer.materialize(analyzedFiles, plan)
                 val currentSnapshot = matchingSnapshot
                 val currentlyTuned = currentSnapshot != null && !currentSnapshot.reason.startsWith("Undo snapshot")
@@ -207,6 +214,7 @@ private fun MugenAiTunerApp() {
                         selectedPreset = selectedPreset,
                         profile = skillProfile,
                         availableCategories = availableCategories,
+                        engineDifficultyScaling = engineDifficultyScaling,
                         onPresetSelected = { preset ->
                             selectedPreset = preset
                             if (preset != DifficultyPreset.CUSTOM) {
@@ -220,6 +228,9 @@ private fun MugenAiTunerApp() {
                         onCategoryChanged = { category, value ->
                             selectedPreset = DifficultyPreset.CUSTOM
                             skillProfile = skillProfile.withCategorySkill(category, value)
+                        },
+                        onEngineDifficultyScalingChanged = { enabled ->
+                            engineDifficultyScaling = enabled
                         },
                     )
                 }
@@ -261,7 +272,10 @@ private fun MugenAiTunerApp() {
                                                 analyzedFiles = analyzedFiles,
                                                 analyzedFingerprint = fingerprint,
                                                 materialized = materialized,
-                                                reason = "Apply ${selectedPreset.label} at ${skillProfile.overallSkill}% overall skill",
+                                                reason = buildString {
+                                                    append("Apply ${selectedPreset.label} at ${skillProfile.overallSkill}% overall skill")
+                                                    if (engineDifficultyScaling) append(" with IKEMEN AILevel scaling")
+                                                },
                                             )
                                         }.onSuccess { transaction ->
                                             actionMessage = "Applied ${transaction.appliedEditCount} AI change(s) across ${transaction.changedFileCount} file(s). Backup: ${transaction.backupLocation}"
@@ -363,9 +377,11 @@ private fun DifficultyControls(
     selectedPreset: DifficultyPreset,
     profile: SkillProfile,
     availableCategories: List<BehaviorCategory>,
+    engineDifficultyScaling: Boolean,
     onPresetSelected: (DifficultyPreset) -> Unit,
     onOverallChanged: (Int) -> Unit,
     onCategoryChanged: (BehaviorCategory, Int) -> Unit,
+    onEngineDifficultyScalingChanged: (Boolean) -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -400,6 +416,24 @@ private fun DifficultyControls(
                 valueRange = 0f..100f,
                 steps = 99,
             )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Respect IKEMEN difficulty")
+                    Text(
+                        "AILevel 4 uses your selected target; lower engine levels weaken it and higher levels move toward the character's original behavior.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(
+                    checked = engineDifficultyScaling,
+                    onCheckedChange = onEngineDifficultyScalingChanged,
+                )
+            }
 
             if (selectedPreset == DifficultyPreset.CUSTOM && availableCategories.isNotEmpty()) {
                 Text("Custom behavior controls", style = MaterialTheme.typography.titleSmall)
