@@ -34,9 +34,15 @@ object AiStrengthEstimator {
         }
 
         val evidence = mutableListOf<Evidence>()
+        var ignoredUnclassifiedDecisions = 0
         for (behavior in analysis.behaviors) {
             if (behavior.confidence == Confidence.LOW || behavior.confidence == Confidence.UNKNOWN) continue
-            for (decision in RandomProbabilityParser.findAll(behavior.rawCode)) {
+            val decisions = RandomProbabilityParser.findAll(behavior.rawCode)
+            if (behavior.category == BehaviorCategory.UNKNOWN) {
+                ignoredUnclassifiedDecisions += decisions.size
+                continue
+            }
+            for (decision in decisions) {
                 evidence += Evidence(
                     category = behavior.category,
                     chance = decision.activationChance,
@@ -52,14 +58,16 @@ object AiStrengthEstimator {
                 confidence = Confidence.LOW,
                 evidenceCount = 0,
                 categoryScores = emptyMap(),
-                notes = listOf(
-                    "Custom AI exists, but the analyzer did not find enough simple probability decisions to estimate its original strength safely.",
-                ),
+                notes = buildList {
+                    add("Custom AI exists, but the analyzer did not find enough classified probability decisions to estimate its original strength safely.")
+                    if (ignoredUnclassifiedDecisions > 0) {
+                        add("$ignoredUnclassifiedDecisions probability decision(s) were excluded because their AI behavior purpose is not classified yet.")
+                    }
+                },
             )
         }
 
         val categoryScores = evidence.groupBy { it.category }
-            .filterKeys { it != BehaviorCategory.UNKNOWN }
             .mapValues { (_, values) ->
                 weightedAverage(values.map { pressureScore(it.chance) to confidenceWeight(it.confidence) })
                     .roundToInt()
@@ -74,7 +82,7 @@ object AiStrengthEstimator {
         )
 
         // Broad coverage is harder to exploit than an AI that is excellent in only one situation.
-        val meaningfulCategories = categoryScores.keys.count { it != BehaviorCategory.UNKNOWN }
+        val meaningfulCategories = categoryScores.keys.size
         val coverageBonus = ((meaningfulCategories - 2).coerceAtLeast(0) * 1.5).coerceAtMost(9.0)
         val score = (weightedOverall + coverageBonus).roundToInt().coerceIn(0, 100)
         val confidence = when {
@@ -91,11 +99,17 @@ object AiStrengthEstimator {
             categoryScores = categoryScores.toSortedMap(compareBy { it.ordinal }),
             notes = buildList {
                 add("This is a static-code estimate, not a measured match win rate.")
+                if (ignoredUnclassifiedDecisions > 0) {
+                    add("$ignoredUnclassifiedDecisions probability decision(s) were excluded because their behavior is still semantically unknown.")
+                }
+                if (analysis.unresolvedSourceReferences.isNotEmpty()) {
+                    add("The estimate may be incomplete because referenced character-code files are missing; automatic editing remains blocked.")
+                }
                 if (analysis.difficultyResponsiveness == DifficultyResponsiveness.NONE) {
                     add("The detected AI does not appear to scale numerically with AILevel, so low engine difficulty may still feel close to its full authored behavior.")
                 }
                 if (confidence == Confidence.LOW) {
-                    add("Only limited simple probability evidence was available; treat the score as approximate.")
+                    add("Only limited classified probability evidence was available; treat the score as approximate.")
                 }
             },
         )
@@ -129,7 +143,7 @@ object AiStrengthEstimator {
         BehaviorCategory.THROW -> 0.90
         BehaviorCategory.SUPER -> 0.85
         BehaviorCategory.MOVEMENT -> 0.80
-        BehaviorCategory.UNKNOWN -> 0.40
+        BehaviorCategory.UNKNOWN -> 0.0
     }
 
     private fun weightedAverage(values: List<Pair<Double, Double>>): Double {
