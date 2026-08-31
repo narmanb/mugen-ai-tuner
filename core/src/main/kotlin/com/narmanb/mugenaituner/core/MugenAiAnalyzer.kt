@@ -14,9 +14,6 @@ object MugenAiAnalyzer {
         """(?i)^\s*(?:10\s*\*\s*([0-9])|([0-9])\s*\*\s*10)\s*$""",
     )
     private val explicitLevelRangeRegex = Regex("""(?i)\b0\s*(?:~|-|to)\s*([0-9])\b""")
-    private val scaledAiLevelRegex = Regex(
-        """(?i)(ailevel\s*[+\-*/]|[+\-*/]\s*ailevel|ailevel\s*(?:>=|>|==|=|<=|<)\s*[1-8]\b)""",
-    )
 
     fun analyze(files: List<SourceFile>): CharacterAnalysis {
         if (files.isEmpty()) {
@@ -75,7 +72,7 @@ object MugenAiAnalyzer {
                 "ailevel" in lower || varReferenceRegex.containsMatchIn(lower) || "command" in lower
             } ?: block.lines.firstOrNull()
 
-            if (scaledAiLevelRegex.containsMatchIn(joined)) scaledCount++
+            if (AiLevelDifficultyScaling.hasNumericScaling(block.codeText)) scaledCount++
 
             behaviors += AiBehavior(
                 category = category,
@@ -116,7 +113,7 @@ object MugenAiAnalyzer {
                 add("Legacy command-based AI activation was detected; these findings are treated more cautiously than direct AILevel logic.")
             }
             if (aiDetected && responsiveness == DifficultyResponsiveness.NONE) {
-                add("AI was detected, but no analyzed behavior directly scales with the numeric AILevel. Engine difficulty may mainly act as an on/off switch for this character.")
+                add("AI was detected, but no analyzed behavior distinguishes between numeric AILevel values 1–8. Engine difficulty may mainly act as an on/off switch for this character.")
             }
             if (distinctBehaviors.any { it.category == BehaviorCategory.UNKNOWN }) {
                 add("Some AI behavior is visible but semantically unclassified; those blocks are kept read-only rather than assigned a tuning category by guesswork.")
