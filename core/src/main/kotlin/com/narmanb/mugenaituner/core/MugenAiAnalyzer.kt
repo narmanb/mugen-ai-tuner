@@ -391,6 +391,12 @@ object MugenAiAnalyzer {
         val byName = definitions.associateBy { it.name.lowercase() }
         val result = linkedSetOf<String>()
 
+        // Winane-style XOR activation is structurally distinctive enough to treat the involved
+        // command names as likely legacy AI commands, but downstream flags remain medium-confidence.
+        blocks.forEach { block ->
+            result += LegacyXorAiDetector.detectCommandNames(block.codeText)
+        }
+
         definitions.filter { it.hinted && it.impractical }.forEach { result += it.name }
 
         blocks.forEach { block ->
