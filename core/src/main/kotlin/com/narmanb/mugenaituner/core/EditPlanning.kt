@@ -1,8 +1,5 @@
 package com.narmanb.mugenaituner.core
 
-import kotlin.math.pow
-import kotlin.math.roundToInt
-
 data class PlannedEdit(
     val category: BehaviorCategory,
     val filePath: String,
@@ -24,22 +21,26 @@ data class EditPlan(
 }
 
 object AiEditPlanner {
-    private val simpleRandomRegex = Regex("""(?i)\brandom\s*(<=|<)\s*(\d{1,3})\b""")
+    private val simpleRandomRegex = Regex("""(?i)\brandom\s*(<=|>=|<|>)\s*(1000|\d{1,3})\b""")
     private val numericAiLevelScalingRegex = Regex(
-        """(?i)(random[^\n]*ailevel|ailevel[^\n]*random|ailevel\s*[+\-*/]|[+\-*/]\s*ailevel)""",
+        """(?i)(random[^\n]*ailevel|ailevel[^\n]*random|ailevel\s*[+\-*/]|[+\-*/]\s*ailevel|ailevel\s*(?:>=|>|==|=|<=|<)\s*[1-8]\b)""",
     )
 
     fun plan(analysis: CharacterAnalysis, profile: SkillProfile): EditPlan =
         plan(analysis, profile, engineDifficultyScaling = false)
 
     /**
-     * Builds a conservative edit plan. Only high-confidence AI blocks with simple
-     * Random < N / Random <= N expressions are considered automatically writable.
+     * Builds a conservative standardized edit plan. Only high-confidence AI blocks with simple
+     * Random comparisons are considered automatically writable.
      *
-     * When [engineDifficultyScaling] is enabled, AILevel 4 is treated as the selected target
-     * profile, levels 1-3 scale below it, and levels 5-8 interpolate back toward the character's
-     * original probability. This makes IKEMEN/MUGEN 1.0+ difficulty useful without blindly
-     * multiplying every Random expression in the character.
+     * The selected 0–100 skill is mapped onto shared category-specific probability curves. This
+     * means 50% aims for the app's common Normal target instead of multiplying whatever arbitrary
+     * probability the character author happened to use. Five percent of the original probability
+     * is retained as authored style.
+     *
+     * When [engineDifficultyScaling] is enabled, AILevel 1 starts at one quarter of the selected
+     * standardized skill, AILevel 4 equals the selected skill, and AILevel 8 reaches the app's
+     * standardized Expert/100 target. Existing numeric AILevel formulas remain untouched.
      */
     fun plan(
         analysis: CharacterAnalysis,
@@ -70,18 +71,42 @@ object AiEditPlanner {
             }
 
             val skill = normalized.skillFor(behavior.category)
-            val factor = adjustmentFactor(behavior.category, skill)
+            var producedEdit = false
 
-            matches.forEach { match ->
+            matches.forEach matchLoop@{ match ->
                 val operator = match.groupValues[1]
-                val original = match.groupValues[2].toIntOrNull() ?: return@forEach
-                val target = (original * factor).roundToInt().coerceIn(1, 999)
+                val original = match.groupValues[2].toIntOrNull() ?: return@matchLoop
+                val centerThreshold = StandardizedAiCalibration.standardizedThreshold(
+                    category = behavior.category,
+                    skill = skill,
+                    operator = operator,
+                    originalThreshold = original,
+                ) ?: return@matchLoop
+
                 val replacementExpression = if (engineDifficultyScaling) {
-                    engineScaledExpression(operator, target, original)
+                    val lowThreshold = StandardizedAiCalibration.standardizedThreshold(
+                        category = behavior.category,
+                        skill = StandardizedAiCalibration.lowEngineSkill(skill),
+                        operator = operator,
+                        originalThreshold = original,
+                    ) ?: return@matchLoop
+                    val highThreshold = StandardizedAiCalibration.standardizedThreshold(
+                        category = behavior.category,
+                        skill = 100,
+                        operator = operator,
+                        originalThreshold = original,
+                    ) ?: return@matchLoop
+                    engineScaledExpression(
+                        operator = operator,
+                        lowThreshold = lowThreshold,
+                        centerThreshold = centerThreshold,
+                        highThreshold = highThreshold,
+                    )
                 } else {
-                    "Random $operator $target"
+                    "Random $operator $centerThreshold"
                 }
-                if (!engineDifficultyScaling && target == original) return@forEach
+
+                if (!engineDifficultyScaling && centerThreshold == original) return@matchLoop
 
                 edits += PlannedEdit(
                     category = behavior.category,
@@ -91,12 +116,15 @@ object AiEditPlanner {
                     replacementExpression = replacementExpression,
                     confidence = behavior.confidence,
                     reason = if (engineDifficultyScaling) {
-                        "Scale ${behavior.category.name.lowercase().replace('_', ' ')} around ${skill}% (${DifficultyTuning.labelFor(skill)}) at AILevel 4, rising toward the original behavior at AILevel 8."
+                        "Standardize ${behavior.category.name.lowercase().replace('_', ' ')} around ${skill}% (${DifficultyTuning.labelFor(skill)}) at AILevel 4, with lower levels weaker and AILevel 8 reaching Expert/100 behavior."
                     } else {
-                        "Adjust ${behavior.category.name.lowercase().replace('_', ' ')} decision frequency toward ${skill}% (${DifficultyTuning.labelFor(skill)})."
+                        "Standardize ${behavior.category.name.lowercase().replace('_', ' ')} toward ${skill}% (${DifficultyTuning.labelFor(skill)}) on the shared MUGEN AI Tuner scale."
                     },
                 )
+                producedEdit = true
             }
+
+            if (!producedEdit) skipped++
         }
 
         return EditPlan(
@@ -106,8 +134,11 @@ object AiEditPlanner {
             notes = buildList {
                 if (skipped > 0) add("$skipped analyzed AI behavior block(s) were left unchanged because their rewrite was not yet considered safe enough.")
                 if (edits.isEmpty() && analysis.aiDetected) add("AI was detected, but no high-confidence simple probability edits are currently safe to apply automatically.")
+                if (edits.isNotEmpty()) {
+                    add("The 0–100 scale is standardized: 50% targets a shared Normal behavior level rather than half of the author's original probability.")
+                }
                 if (engineDifficultyScaling && edits.isNotEmpty()) {
-                    add("IKEMEN/MUGEN AILevel scaling is enabled: AILevel 4 targets the selected skill, 1-3 are weaker, and 5-8 move toward the character's original probability.")
+                    add("IKEMEN/MUGEN AILevel scaling is enabled: AILevel 1 starts below the selected target, AILevel 4 matches it, and AILevel 8 reaches the standardized Expert/100 target.")
                 }
                 add("This plan is a preview. File writes and backups are handled separately so analysis never modifies a character by itself.")
             },
@@ -115,31 +146,22 @@ object AiEditPlanner {
         )
     }
 
-    internal fun engineScaledExpression(operator: String, target: Int, original: Int): String {
-        val safeTarget = target.coerceIn(1, 999)
-        val safeOriginal = original.coerceIn(safeTarget, 999)
-        return "Random $operator ifelse(AILevel <= 4, $safeTarget * AILevel / 4.0, $safeTarget + ($safeOriginal - $safeTarget) * (AILevel - 4) / 4.0)"
-    }
+    internal fun engineScaledExpression(
+        operator: String,
+        lowThreshold: Int,
+        centerThreshold: Int,
+        highThreshold: Int,
+    ): String =
+        "Random $operator ifelse(AILevel <= 1, $lowThreshold, " +
+            "ifelse(AILevel <= 4, $lowThreshold + ($centerThreshold - $lowThreshold) * (AILevel - 1) / 3.0, " +
+            "$centerThreshold + ($highThreshold - $centerThreshold) * (AILevel - 4) / 4.0))"
 
-    /**
-     * 100 preserves the character's original probability. Lower standardized skill values
-     * reduce different behavior categories at different rates instead of treating every
-     * behavior as the same kind of percentage.
-     */
-    internal fun adjustmentFactor(category: BehaviorCategory, skill: Int): Double {
-        val s = skill.coerceIn(0, 100) / 100.0
-        val (minimum, exponent) = when (category) {
-            BehaviorCategory.DEFENSE -> 0.08 to 1.60
-            BehaviorCategory.REACTION -> 0.10 to 1.80
-            BehaviorCategory.AGGRESSION -> 0.25 to 1.10
-            BehaviorCategory.COMBO -> 0.15 to 1.35
-            BehaviorCategory.ANTI_AIR -> 0.10 to 1.60
-            BehaviorCategory.PROJECTILE_RESPONSE -> 0.10 to 1.60
-            BehaviorCategory.THROW -> 0.20 to 1.20
-            BehaviorCategory.SUPER -> 0.20 to 1.00
-            BehaviorCategory.MOVEMENT -> 0.30 to 1.00
-            BehaviorCategory.UNKNOWN -> 1.00 to 1.00
-        }
-        return minimum + (1.0 - minimum) * s.pow(exponent)
-    }
+    /** Temporary compatibility overload for older internal tests/callers. */
+    internal fun engineScaledExpression(operator: String, target: Int, original: Int): String =
+        engineScaledExpression(
+            operator = operator,
+            lowThreshold = target,
+            centerThreshold = target,
+            highThreshold = original,
+        )
 }
