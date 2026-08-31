@@ -62,12 +62,15 @@ object SourceGraphResolver {
             if (visited.putIfAbsent(key, file) != null) continue
 
             extractReferences(file).forEach { reference ->
-                val resolved = resolveReference(file.path, reference, byNormalizedPath, byBaseName)
+                val resolved = resolveReference(file.path, reference.path, byNormalizedPath, byBaseName)
                 if (resolved != null) {
                     val resolvedKey = normalize(resolved.path).lowercase()
                     if (resolvedKey !in visited) queue.add(resolved)
-                } else if (reference.substringAfterLast('.', "").lowercase() in supportedExtensions) {
-                    unresolved += "${file.path} -> $reference"
+                } else if (
+                    reference.mustResolveInsideCharacter &&
+                    reference.path.substringAfterLast('.', "").lowercase() in supportedExtensions
+                ) {
+                    unresolved += "${file.path} -> ${reference.path}"
                 }
             }
         }
@@ -83,8 +86,8 @@ object SourceGraphResolver {
         )
     }
 
-    private fun extractReferences(file: SourceFile): Set<String> {
-        val references = linkedSetOf<String>()
+    private fun extractReferences(file: SourceFile): Set<SourceReference> {
+        val references = linkedSetOf<SourceReference>()
         val extension = file.path.substringAfterLast('.', "").lowercase()
 
         file.content.lineSequence().forEach { raw ->
@@ -94,16 +97,26 @@ object SourceGraphResolver {
             if (extension == "def") {
                 val assignment = assignmentRegex.find(line)
                 if (assignment != null) {
+                    val key = assignment.groupValues[1].trim().lowercase()
                     val value = cleanReference(assignment.groupValues[2])
                     if (value.substringAfterLast('.', "").lowercase() in supportedExtensions) {
-                        references += value
+                        // `stcommon` is normally supplied by MUGEN/IKEMEN itself (commonly
+                        // common1.cns under the engine data directory). If a custom stcommon file
+                        // is bundled inside the character folder we still resolve and analyze it,
+                        // but absence from the character folder is not a broken source graph.
+                        references += SourceReference(
+                            path = value,
+                            mustResolveInsideCharacter = key != "stcommon",
+                        )
                     }
                 }
             }
 
             includeRegex.find(line)?.groupValues?.getOrNull(1)?.let(::cleanReference)?.let { value ->
                 if (value.substringAfterLast('.', "").lowercase() in supportedExtensions) {
-                    references += value
+                    // Includes are explicit dependencies of the supplied character source and must
+                    // resolve within the selected source set.
+                    references += SourceReference(value, mustResolveInsideCharacter = true)
                 }
             }
         }
@@ -161,4 +174,9 @@ object SourceGraphResolver {
         }
         return raw
     }
+
+    private data class SourceReference(
+        val path: String,
+        val mustResolveInsideCharacter: Boolean,
+    )
 }
