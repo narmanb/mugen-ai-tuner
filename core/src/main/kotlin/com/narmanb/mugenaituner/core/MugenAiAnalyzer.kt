@@ -5,7 +5,7 @@ object MugenAiAnalyzer {
     private val assignmentRegex = Regex("""^\s*([^=]+?)\s*=\s*(.*?)\s*$""")
     private val varReferenceRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)""")
     private val assignedVarKeyRegex = Regex("""(?i)^var\s*\(\s*(\d+)\s*\)$""")
-    private val directVarAssignmentRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)\s*:?=""")
+    private val directVarAssignmentRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)\s*:=\s*(.+)$""")
     private val randomThresholdRegex = Regex("""(?i)\brandom\s*(?:<|<=|>|>=)\s*\d+""")
     private val commandTriggerNameRegex = Regex("""(?i)\bcommand\s*=\s*\"([^\"]+)\"""")
     private val legacyAiNameHintRegex = Regex(
@@ -173,12 +173,15 @@ object MugenAiAnalyzer {
     private fun traceAiFlags(blocks: List<ParsedBlock>, aiCommandNames: Set<String>): List<AiFlag> {
         val flags = linkedMapOf<Int, AiFlag>()
 
-        // Direct assignment syntax such as var(42) := AILevel > 0.
-        blocks.forEach { block ->
-            block.lines.forEach { line ->
-                if ("ailevel" !in line.code.lowercase()) return@forEach
-                directVarAssignmentRegex.find(line.code)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { variable ->
-                    flags[variable] = AiFlag(variable, Confidence.HIGH, "Assigned directly from an AILevel expression.")
+        // MUGEN's direct assignment operator is :=. Plain = is a comparison and must never seed
+        // an AI variable merely because AILevel appears on the same line.
+        for (block in blocks) {
+            for (line in block.lines) {
+                val assignment = directVarAssignmentRegex.find(line.code) ?: continue
+                val variable = assignment.groupValues[1].toIntOrNull() ?: continue
+                val rightHandSide = assignment.groupValues[2]
+                if ("ailevel" in rightHandSide.lowercase()) {
+                    flags[variable] = AiFlag(variable, Confidence.HIGH, "Assigned directly from an AILevel expression using :=.")
                 }
             }
         }
@@ -205,18 +208,40 @@ object MugenAiAnalyzer {
             }
         }
 
-        // Follow simple chains: AI variable A gates a write that establishes/configures variable B.
+        // Follow simple dependency chains through both direct := assignments and VarSet/VarAdd.
         var changed: Boolean
         do {
             changed = false
             val known = flags.keys.toSet()
+
+            for (block in blocks) {
+                for (line in block.lines) {
+                    val assignment = directVarAssignmentRegex.find(line.code) ?: continue
+                    val target = assignment.groupValues[1].toIntOrNull() ?: continue
+                    if (target in known) continue
+                    val rightHandSide = assignment.groupValues[2]
+                    val referencesKnown = varReferenceRegex.findAll(rightHandSide)
+                        .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
+                        .any { it in known }
+                    if (referencesKnown) {
+                        flags[target] = AiFlag(
+                            target,
+                            Confidence.MEDIUM,
+                            "Direct := assignment depends on another variable already traced to AI activation.",
+                        )
+                        changed = true
+                    }
+                }
+            }
+
+            val knownAfterDirectAssignments = flags.keys.toSet()
             blocks.forEach { block ->
                 val write = variableControllerTarget(block) ?: return@forEach
-                if (write.variable in known) return@forEach
+                if (write.variable in knownAfterDirectAssignments) return@forEach
                 val refs = varReferenceRegex.findAll(block.codeText)
                     .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
                     .toSet()
-                if (refs.any { it in known }) {
+                if (refs.any { it in knownAfterDirectAssignments }) {
                     flags[write.variable] = AiFlag(
                         write.variable,
                         Confidence.MEDIUM,
@@ -368,10 +393,8 @@ object MugenAiAnalyzer {
         val byName = definitions.associateBy { it.name.lowercase() }
         val result = linkedSetOf<String>()
 
-        // Strong naming + complexity evidence is sufficient for common cpu1..cpu63 systems.
         definitions.filter { it.hinted && it.impractical }.forEach { result += it.name }
 
-        // Opaque names require a variable controller that ORs together several impractical commands.
         blocks.forEach { block ->
             if (variableControllerTarget(block) == null) return@forEach
             val referenced = commandTriggerNameRegex.findAll(block.codeText)
