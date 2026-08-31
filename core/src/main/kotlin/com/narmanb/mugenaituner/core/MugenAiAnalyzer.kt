@@ -38,9 +38,9 @@ object MugenAiAnalyzer {
         val aiCommandNames = findLegacyAiCommands(blocks)
         val flags = traceAiFlags(blocks, aiCommandNames)
         val flagKeys = flags.map { VariableKey(it.kind, it.variable) }.toSet()
+        val aiLevelVariableDependencies = AiLevelVariableDependencyTracer.trace(files)
         val configurationParameters = detectConfigurationParameters(blocks, flagKeys)
         val behaviors = mutableListOf<AiBehavior>()
-        var scaledCount = 0
 
         for (block in blocks) {
             if (!isPotentialBehaviorBlock(block)) continue
@@ -72,8 +72,10 @@ object MugenAiAnalyzer {
                 val lower = it.code.lowercase()
                 "ailevel" in lower || variableReferenceRegex.containsMatchIn(lower) || "command" in lower
             } ?: block.lines.firstOrNull()
-
-            if (AiLevelDifficultyScaling.hasNumericScaling(block.codeText)) scaledCount++
+            val difficultyScaled = AiLevelVariableDependencyTracer.hasDifficultyScaling(
+                block.codeText,
+                aiLevelVariableDependencies,
+            )
 
             behaviors += AiBehavior(
                 category = category,
@@ -83,23 +85,34 @@ object MugenAiAnalyzer {
                 lineNumber = firstRelevant?.lineNumber ?: block.startLine,
                 section = block.section,
                 rawCode = block.lines.joinToString("\n") { it.raw },
+                difficultyScaled = difficultyScaled,
             )
         }
 
         val distinctBehaviors = behaviors.distinctBy {
             Triple(it.filePath, it.lineNumber, it.rawCode)
         }
+        val directlyScaledCount = distinctBehaviors.count {
+            AiLevelDifficultyScaling.hasNumericScaling(it.rawCode)
+        }
+        val indirectlyScaledCount = distinctBehaviors.count {
+            it.difficultyScaled && !AiLevelDifficultyScaling.hasNumericScaling(it.rawCode)
+        }
+        val totalScaledCount = directlyScaledCount + indirectlyScaledCount
 
         val aiDetected = flags.isNotEmpty() || distinctBehaviors.isNotEmpty() || configurationParameters.isNotEmpty() ||
             blocks.any { AiLevelSignalClassifier.classifyCodeBlock(it.codeText) != null } || aiCommandNames.isNotEmpty()
 
-        val responsiveness = responsiveness(distinctBehaviors.size, scaledCount, aiDetected)
+        val responsiveness = responsiveness(distinctBehaviors.size, totalScaledCount, aiDetected)
         val notes = buildList {
             if (unresolvedSourceReferences.isNotEmpty()) {
                 add("${unresolvedSourceReferences.size} referenced character-code file(s) could not be resolved; analysis completeness is reduced.")
             }
             if (flags.isNotEmpty()) {
                 add("AI-related integer/float variables were traced from their activation logic instead of assuming a fixed variable such as var(59).")
+            }
+            if (indirectlyScaledCount > 0) {
+                add("$indirectlyScaledCount AI behavior block(s) scale with numeric AILevel through traced var/fvar dependencies rather than a literal AILevel token.")
             }
             if (configurationParameters.isNotEmpty()) {
                 add("Author-exposed packed AI configuration was detected separately from ordinary probability decisions.")
@@ -131,11 +144,12 @@ object MugenAiAnalyzer {
             aiFlags = flags.sortedWith(compareBy<AiFlag> { it.kind.ordinal }.thenBy { it.variable }),
             behaviors = distinctBehaviors,
             difficultyResponsiveness = responsiveness,
-            directlyScaledBehaviorCount = scaledCount,
+            directlyScaledBehaviorCount = directlyScaledCount,
             aiBehaviorCount = distinctBehaviors.size,
             notes = notes,
             configurationParameters = configurationParameters,
             unresolvedSourceReferences = unresolvedSourceReferences,
+            indirectlyScaledBehaviorCount = indirectlyScaledCount,
         )
     }
 
