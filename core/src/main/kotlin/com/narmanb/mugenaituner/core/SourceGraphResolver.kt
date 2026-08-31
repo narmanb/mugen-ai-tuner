@@ -16,8 +16,10 @@ data class SourceGraphResult(
  */
 object SourceGraphResolver {
     private val supportedExtensions = CharacterCodeFileTypes.supportedExtensions
+    private val sectionRegex = Regex("""^\s*\[([^]]+)]""")
     private val assignmentRegex = Regex("""^\s*([^=;]+?)\s*=\s*([^;]+)""")
     private val includeRegex = Regex("""(?i)^\s*#?include\s*(?:=\s*)?[\"']?([^\"';]+)[\"']?""")
+    private val defCharacterCodeKeyRegex = Regex("""(?i)^(?:cmd|cns|stcommon|st\d*|states\d*)$""")
 
     /** Conservatively starts from every DEF when the caller does not know which one is active. */
     fun resolve(files: List<SourceFile>): SourceGraphResult = resolveInternal(files, activeDefPath = null)
@@ -89,17 +91,27 @@ object SourceGraphResolver {
     private fun extractReferences(file: SourceFile): Set<SourceReference> {
         val references = linkedSetOf<SourceReference>()
         val extension = file.path.substringAfterLast('.', "").lowercase()
+        var currentSection = ""
 
         file.content.lineSequence().forEach { raw ->
             val line = stripComment(raw).trim()
             if (line.isEmpty()) return@forEach
 
-            if (extension == "def") {
+            val section = sectionRegex.find(line)?.groupValues?.getOrNull(1)?.trim()
+            if (section != null) {
+                currentSection = section
+                return@forEach
+            }
+
+            if (extension == "def" && currentSection.equals("Files", ignoreCase = true)) {
                 val assignment = assignmentRegex.find(line)
                 if (assignment != null) {
                     val key = assignment.groupValues[1].trim().lowercase()
                     val value = cleanReference(assignment.groupValues[2])
-                    if (value.substringAfterLast('.', "").lowercase() in supportedExtensions) {
+                    if (
+                        defCharacterCodeKeyRegex.matches(key) &&
+                        value.substringAfterLast('.', "").lowercase() in supportedExtensions
+                    ) {
                         // `stcommon` is normally supplied by MUGEN/IKEMEN itself (commonly
                         // common1.cns under the engine data directory). If a custom stcommon file
                         // is bundled inside the character folder we still resolve and analyze it,
