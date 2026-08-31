@@ -4,12 +4,17 @@ object MugenAiAnalyzer {
     private val sectionRegex = Regex("""^\s*\[([^]]+)]""")
     private val assignmentRegex = Regex("""^\s*([^=]+?)\s*=\s*(.*?)\s*$""")
     private val varReferenceRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)""")
+    private val assignedVarKeyRegex = Regex("""(?i)^var\s*\(\s*(\d+)\s*\)$""")
     private val directVarAssignmentRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)\s*:?=""")
     private val randomThresholdRegex = Regex("""(?i)\brandom\s*(?:<|<=|>|>=)\s*\d+""")
     private val commandTriggerNameRegex = Regex("""(?i)\bcommand\s*=\s*\"([^\"]+)\"""")
     private val legacyAiNameHintRegex = Regex(
         """(?i)(?:^(?:ai|cpu|computer)\d*$|(?:^|[_\-\s])(?:ai|cpu|computer)(?:\d+)?(?:$|[_\-\s]))""",
     )
+    private val packedTenLevelRegex = Regex(
+        """(?i)^\s*(?:10\s*\*\s*([0-9])|([0-9])\s*\*\s*10)\s*$""",
+    )
+    private val explicitLevelRangeRegex = Regex("""(?i)\b0\s*(?:~|-|to)\s*([0-9])\b""")
     private val scaledAiLevelRegex = Regex(
         """(?i)(ailevel\s*[+\-*/]|[+\-*/]\s*ailevel|ailevel\s*(?:>=|>|==|=|<=|<)\s*[1-8]\b)""",
     )
@@ -34,6 +39,7 @@ object MugenAiAnalyzer {
         val aiCommandNames = findLegacyAiCommands(blocks)
         val flags = traceAiFlags(blocks, aiCommandNames)
         val flagNumbers = flags.map { it.variable }.toSet()
+        val configurationParameters = detectConfigurationParameters(blocks, flagNumbers)
         val behaviors = mutableListOf<AiBehavior>()
         var scaledCount = 0
 
@@ -84,13 +90,16 @@ object MugenAiAnalyzer {
             Triple(it.filePath, it.lineNumber, it.rawCode)
         }
 
-        val aiDetected = flags.isNotEmpty() || distinctBehaviors.isNotEmpty() ||
+        val aiDetected = flags.isNotEmpty() || distinctBehaviors.isNotEmpty() || configurationParameters.isNotEmpty() ||
             blocks.any { "ailevel" in it.codeText.lowercase() } || aiCommandNames.isNotEmpty()
 
         val responsiveness = responsiveness(distinctBehaviors.size, scaledCount, aiDetected)
         val notes = buildList {
             if (flags.isNotEmpty()) {
-                add("AI flag variables were traced from their activation logic instead of assuming a fixed variable number such as var(59).")
+                add("AI-related variables were traced from their activation logic instead of assuming a fixed variable number such as var(59).")
+            }
+            if (configurationParameters.isNotEmpty()) {
+                add("Author-exposed packed AI configuration was detected separately from ordinary probability decisions.")
             }
             if (aiCommandNames.isNotEmpty()) {
                 add("Legacy command-based AI activation was detected; these findings are treated more cautiously than direct AILevel logic.")
@@ -113,6 +122,7 @@ object MugenAiAnalyzer {
             directlyScaledBehaviorCount = scaledCount,
             aiBehaviorCount = distinctBehaviors.size,
             notes = notes,
+            configurationParameters = configurationParameters,
         )
     }
 
@@ -160,39 +170,44 @@ object MugenAiAnalyzer {
             }
         }
 
-        // Standard VarSet controllers directly gated by AILevel or a traced legacy AI command.
+        // VarSet/VarAdd controllers directly gated by AILevel or a traced legacy AI command.
+        // Both `v = 59` and old/common `var(59) = 1` VarSet syntax are supported.
         blocks.forEach { block ->
-            val target = varSetTarget(block) ?: return@forEach
+            val write = variableControllerTarget(block) ?: return@forEach
             val joined = block.codeText.lowercase()
             when {
-                "ailevel" in joined -> flags[target] = AiFlag(
-                    target,
+                "ailevel" in joined -> flags[write.variable] = AiFlag(
+                    write.variable,
                     Confidence.HIGH,
-                    "VarSet is controlled by AILevel.",
+                    "${write.controllerType} is controlled by AILevel.",
                 )
                 aiCommandNames.any { command -> commandReferenced(joined, command) } -> flags.putIfAbsent(
-                    target,
-                    AiFlag(target, Confidence.MEDIUM, "VarSet is controlled by a likely legacy AI-only command set."),
+                    write.variable,
+                    AiFlag(
+                        write.variable,
+                        Confidence.MEDIUM,
+                        "${write.controllerType} is controlled by a likely legacy AI-only command set.",
+                    ),
                 )
             }
         }
 
-        // Follow simple chains: AI flag A gates a VarSet that establishes AI flag B.
+        // Follow simple chains: AI variable A gates a write that establishes/configures variable B.
         var changed: Boolean
         do {
             changed = false
             val known = flags.keys.toSet()
             blocks.forEach { block ->
-                val target = varSetTarget(block) ?: return@forEach
-                if (target in known) return@forEach
+                val write = variableControllerTarget(block) ?: return@forEach
+                if (write.variable in known) return@forEach
                 val refs = varReferenceRegex.findAll(block.codeText)
                     .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
                     .toSet()
                 if (refs.any { it in known }) {
-                    flags[target] = AiFlag(
-                        target,
+                    flags[write.variable] = AiFlag(
+                        write.variable,
                         Confidence.MEDIUM,
-                        "VarSet is gated by another variable already traced to AI activation.",
+                        "${write.controllerType} is gated by another variable already traced to AI activation.",
                     )
                     changed = true
                 }
@@ -202,12 +217,108 @@ object MugenAiAnalyzer {
         return flags.values.toList()
     }
 
+    private fun detectConfigurationParameters(
+        blocks: List<ParsedBlock>,
+        aiVariables: Set<Int>,
+    ): List<AiConfigurationParameter> {
+        val parameters = mutableListOf<AiConfigurationParameter>()
+
+        blocks.forEach { block ->
+            val write = variableControllerTarget(block) ?: return@forEach
+            if (!write.controllerType.equals("VarAdd", ignoreCase = true)) return@forEach
+
+            val joined = block.codeText.lowercase()
+            val referencesKnownAi = varReferenceRegex.findAll(joined)
+                .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
+                .any { it in aiVariables }
+            if (write.variable !in aiVariables && "ailevel" !in joined && !referencesKnownAi) return@forEach
+
+            val values = block.assignments()
+            val valueExpression = values["value"] ?: return@forEach
+            val levelMatch = packedTenLevelRegex.matchEntire(valueExpression) ?: return@forEach
+            val level = (levelMatch.groupValues[1].ifBlank { levelMatch.groupValues[2] }).toIntOrNull()
+                ?: return@forEach
+
+            val raw = block.lines.joinToString("\n") { it.raw }
+            val context = (block.section + "\n" + raw).lowercase()
+            val escapedVariable = Regex.escape(write.variable.toString())
+            val zeroGate = Regex(
+                """(?i)var\s*\(\s*$escapedVariable\s*\)\s*(?:=|==)\s*0\b""",
+            ).containsMatchIn(joined)
+            val oneToNineGate = Regex(
+                """(?i)var\s*\(\s*$escapedVariable\s*\)\s*=\s*\[\s*1\s*,\s*9\s*]""",
+            ).containsMatchIn(joined)
+
+            val explicitKind = when {
+                "combo" in context -> AiConfigurationKind.COMBO_LEVEL
+                "movement" in context || "move setting" in context || "movement setting" in context -> AiConfigurationKind.MOVEMENT_LEVEL
+                "guard" in context && "setting" in context -> AiConfigurationKind.GUARD_LEVEL
+                else -> null
+            }
+            val structuralKind = when {
+                zeroGate -> AiConfigurationKind.COMBO_LEVEL
+                oneToNineGate -> AiConfigurationKind.MOVEMENT_LEVEL
+                else -> null
+            }
+            val kind = explicitKind ?: structuralKind ?: AiConfigurationKind.GENERIC
+            if (kind == AiConfigurationKind.GENERIC) return@forEach
+
+            val rangeFromComment = explicitLevelRangeRegex.find(raw)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val defaultMaximum = when (kind) {
+                AiConfigurationKind.COMBO_LEVEL -> 3
+                AiConfigurationKind.MOVEMENT_LEVEL -> 3
+                AiConfigurationKind.GUARD_LEVEL -> 3
+                AiConfigurationKind.GENERIC -> level.coerceAtLeast(1)
+            }
+            val maximum = maxOf(level, rangeFromComment ?: defaultMaximum)
+            val valueLine = block.lines.firstOrNull {
+                it.code.trimStart().startsWith("value", ignoreCase = true)
+            }
+            val confidence = when {
+                explicitKind != null && structuralKind != null -> Confidence.HIGH
+                explicitKind != null -> Confidence.HIGH
+                structuralKind != null -> Confidence.MEDIUM
+                else -> Confidence.LOW
+            }
+            val label = when (kind) {
+                AiConfigurationKind.COMBO_LEVEL -> "Combo level"
+                AiConfigurationKind.MOVEMENT_LEVEL -> "Movement level"
+                AiConfigurationKind.GUARD_LEVEL -> "Guard level"
+                AiConfigurationKind.GENERIC -> "AI setting"
+            }
+            val description = when (kind) {
+                AiConfigurationKind.COMBO_LEVEL -> "Author-exposed combo sophistication setting packed into an AI variable. Higher levels generally enable more advanced follow-ups."
+                AiConfigurationKind.MOVEMENT_LEVEL -> "Author-exposed AI movement/decision setting packed into an AI variable. Higher levels generally increase consistency and movement capability."
+                AiConfigurationKind.GUARD_LEVEL -> "Author-exposed guarding setting packed into an AI variable."
+                AiConfigurationKind.GENERIC -> "Author-exposed packed AI configuration setting."
+            }
+
+            parameters += AiConfigurationParameter(
+                kind = kind,
+                label = label,
+                variable = write.variable,
+                currentLevel = level,
+                minimumLevel = 0,
+                maximumLevel = maximum,
+                confidence = confidence,
+                filePath = block.filePath,
+                lineNumber = valueLine?.lineNumber ?: block.startLine,
+                originalExpression = valueLine?.code ?: "value = $valueExpression",
+                description = description,
+            )
+        }
+
+        return parameters.distinctBy {
+            listOf(it.kind, it.variable, it.filePath, it.lineNumber)
+        }
+    }
+
     /**
      * Old WinMUGEN characters often activate AI by having the engine randomly satisfy commands a
      * human could not reasonably enter. Names such as cpu1/cpu2 are common, but not guaranteed.
      *
      * We therefore require structural evidence before treating opaque command names as AI:
-     * a VarSet controller must be driven by several command definitions that themselves look
+     * a variable controller must be driven by several command definitions that themselves look
      * deliberately impractical. This is much safer than declaring every long combo command AI.
      */
     private fun findLegacyAiCommands(blocks: List<ParsedBlock>): Set<String> {
@@ -241,9 +352,9 @@ object MugenAiAnalyzer {
         // Strong naming + complexity evidence is sufficient for common cpu1..cpu63 systems.
         definitions.filter { it.hinted && it.impractical }.forEach { result += it.name }
 
-        // Opaque names require a VarSet that ORs together several impractical commands.
+        // Opaque names require a variable controller that ORs together several impractical commands.
         blocks.forEach { block ->
-            if (varSetTarget(block) == null) return@forEach
+            if (variableControllerTarget(block) == null) return@forEach
             val referenced = commandTriggerNameRegex.findAll(block.codeText)
                 .map { it.groupValues[1] }
                 .distinct()
@@ -257,10 +368,22 @@ object MugenAiAnalyzer {
         return result
     }
 
-    private fun varSetTarget(block: ParsedBlock): Int? {
+    private fun variableControllerTarget(block: ParsedBlock): VariableWrite? {
         val values = block.assignments()
-        if (!values["type"].orEmpty().equals("VarSet", ignoreCase = true)) return null
-        return values["v"]?.trim()?.toIntOrNull()
+        val controllerType = values["type"].orEmpty()
+        if (!controllerType.equals("VarSet", ignoreCase = true) &&
+            !controllerType.equals("VarAdd", ignoreCase = true)
+        ) return null
+
+        values["v"]?.trim()?.toIntOrNull()?.let { variable ->
+            return VariableWrite(variable, controllerType)
+        }
+
+        values.keys.forEach { key ->
+            val variable = assignedVarKeyRegex.matchEntire(key)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            if (variable != null) return VariableWrite(variable, controllerType)
+        }
+        return null
     }
 
     private fun isPureAiActivationBlock(block: ParsedBlock): Boolean {
@@ -362,6 +485,11 @@ object MugenAiAnalyzer {
 
     private fun commandReferenced(joined: String, command: String): Boolean =
         Regex("""(?i)\bcommand\s*=\s*[\"]?${Regex.escape(command)}[\"]?""").containsMatchIn(joined)
+
+    private data class VariableWrite(
+        val variable: Int,
+        val controllerType: String,
+    )
 
     private data class CodeLine(
         val lineNumber: Int,
