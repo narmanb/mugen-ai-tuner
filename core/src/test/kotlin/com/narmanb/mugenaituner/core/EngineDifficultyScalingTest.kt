@@ -5,12 +5,19 @@ import kotlin.test.assertTrue
 
 class EngineDifficultyScalingTest {
     @Test
-    fun engineScalingUsesAiLevelAndPreservesOriginalAtTopEnd() {
-        val expression = AiEditPlanner.engineScaledExpression("<", target = 350, original = 900)
+    fun engineScalingInterpolatesLowSelectedAndExpertThresholds() {
+        val expression = AiEditPlanner.engineScaledExpression(
+            operator = "<",
+            lowThreshold = 150,
+            centerThreshold = 470,
+            highThreshold = 900,
+        )
 
+        assertTrue("AILevel <= 1" in expression)
         assertTrue("AILevel <= 4" in expression)
-        assertTrue("350" in expression)
-        assertTrue("900 - 350" in expression)
+        assertTrue("150" in expression)
+        assertTrue("470 - 150" in expression)
+        assertTrue("900 - 470" in expression)
         assertTrue(expression.startsWith("Random < ifelse"))
     }
 
@@ -44,7 +51,11 @@ class EngineDifficultyScalingTest {
             engineDifficultyScaling = true,
         )
 
+        val replacement = plan.edits.single().replacementExpression
         assertTrue(plan.engineDifficultyScaling)
-        assertTrue(plan.edits.single().replacementExpression.contains("AILevel"))
+        assertTrue(replacement.contains("AILevel"))
+        assertTrue(replacement.contains("AILevel <= 1"))
+        assertTrue(replacement.contains("AILevel <= 4"))
+        assertTrue(plan.notes.any { "Expert/100" in it })
     }
 }
