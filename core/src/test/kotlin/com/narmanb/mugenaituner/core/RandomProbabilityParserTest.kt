@@ -24,6 +24,39 @@ class RandomProbabilityParserTest {
     }
 
     @Test
+    fun parsesModuloProbabilityExactly() {
+        val decision = RandomProbabilityParser.findAll("trigger1 = Random % 100 > 60").single()
+
+        assertEquals(RandomProbabilityForm.MODULO_COMPARISON, decision.form)
+        assertEquals(0.39, decision.activationChance, 0.0001)
+        assertEquals(100, decision.modulus)
+        assertEquals(">", decision.comparisonOperator)
+    }
+
+    @Test
+    fun moduloReplacementPreservesModuloShapeAndMovesTowardTargetChance() {
+        val decision = RandomProbabilityParser.findAll("trigger1 = Random % 100 > 60").single()
+        val replacement = decision.replacementForChance(0.70)
+        val rewritten = RandomProbabilityParser.findAll(replacement).single()
+
+        assertTrue(replacement.startsWith("Random % 100 >"))
+        assertTrue(kotlin.math.abs(rewritten.activationChance - 0.70) <= 0.011)
+    }
+
+    @Test
+    fun moduloUsesExactDistributionWhenModulusDoesNotDivideOneThousand() {
+        val exact = RandomProbabilityParser.moduloActivationChance(
+            modulus = 64,
+            operator = "<",
+            threshold = 32,
+        )
+
+        // 1000 is not divisible by 64, so this deliberately checks the enumerated engine domain.
+        val manual = (0..999).count { (it % 64) < 32 } / 1000.0
+        assertEquals(manual, exact, 0.000001)
+    }
+
+    @Test
     fun ignoresMiddleAndAlwaysTrueRanges() {
         val decisions = RandomProbabilityParser.findAll(
             """
@@ -73,6 +106,37 @@ class RandomProbabilityParserTest {
         )
         assertTrue(scaledPlan.edits.isEmpty())
         assertTrue(scaledPlan.notes.any { "range-style" in it })
+    }
+
+    @Test
+    fun fixedModuloCanBeStandardizedButDynamicAiLevelConversionStaysConservative() {
+        val behavior = AiBehavior(
+            category = BehaviorCategory.REACTION,
+            summary = "React",
+            confidence = Confidence.HIGH,
+            filePath = "char.cmd",
+            lineNumber = 10,
+            section = "State -1, React",
+            rawCode = "triggerall = AILevel > 0\ntrigger1 = Random % 100 > 60\ntype = ChangeState",
+        )
+        val analysis = CharacterAnalysis(
+            characterName = "Modulo AI",
+            author = null,
+            aiDetected = true,
+            aiFlags = emptyList(),
+            behaviors = listOf(behavior),
+            difficultyResponsiveness = DifficultyResponsiveness.NONE,
+            directlyScaledBehaviorCount = 0,
+            aiBehaviorCount = 1,
+            notes = emptyList(),
+        )
+
+        val fixedPlan = AiEditPlanner.plan(analysis, SkillProfile(75), engineDifficultyScaling = false)
+        assertEquals(1, fixedPlan.edits.size)
+        assertTrue(fixedPlan.edits.single().replacementExpression.startsWith("Random % 100"))
+
+        val scaledPlan = AiEditPlanner.plan(analysis, SkillProfile(75), engineDifficultyScaling = true)
+        assertTrue(scaledPlan.edits.isEmpty())
     }
 
     @Test
