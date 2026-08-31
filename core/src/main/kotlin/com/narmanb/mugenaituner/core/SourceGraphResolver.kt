@@ -19,7 +19,17 @@ object SourceGraphResolver {
     private val assignmentRegex = Regex("""^\s*([^=;]+?)\s*=\s*([^;]+)""")
     private val includeRegex = Regex("""(?i)^\s*#?include\s*(?:=\s*)?[\"']?([^\"';]+)[\"']?""")
 
-    fun resolve(files: List<SourceFile>): SourceGraphResult {
+    /** Conservatively starts from every DEF when the caller does not know which one is active. */
+    fun resolve(files: List<SourceFile>): SourceGraphResult = resolveInternal(files, activeDefPath = null)
+
+    /**
+     * Starts from exactly one active DEF. This is the preferred mode when a character folder ships
+     * alternate DEFs for different modes, patches, engines, or AI variants.
+     */
+    fun resolveFromDef(files: List<SourceFile>, activeDefPath: String): SourceGraphResult =
+        resolveInternal(files, activeDefPath)
+
+    private fun resolveInternal(files: List<SourceFile>, activeDefPath: String?): SourceGraphResult {
         if (files.isEmpty()) {
             return SourceGraphResult(emptyList(), emptyList(), emptyList(), emptyList())
         }
@@ -31,8 +41,17 @@ object SourceGraphResolver {
             return SourceGraphResult(files, emptyList(), emptyList(), emptyList())
         }
 
+        val startingDefs = if (activeDefPath == null) {
+            defFiles
+        } else {
+            val normalizedRequested = normalize(activeDefPath).lowercase()
+            val exact = defFiles.firstOrNull { normalize(it.path).lowercase() == normalizedRequested }
+                ?: error("Active DEF '$activeDefPath' was not found in the supplied character files.")
+            listOf(exact)
+        }
+
         val queue = ArrayDeque<SourceFile>()
-        defFiles.forEach(queue::add)
+        startingDefs.forEach(queue::add)
         val visited = linkedMapOf<String, SourceFile>()
         val unresolved = linkedSetOf<String>()
 
