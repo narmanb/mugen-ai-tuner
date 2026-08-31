@@ -8,7 +8,9 @@ package com.narmanb.mugenaituner.core
 object AiLevelDifficultyScaling {
     private val arithmetic = Regex("""(?i)(?:\bailevel\s*[+\-*/%]|[+\-*/%]\s*ailevel\b)""")
     private val forwardComparison = Regex("""(?i)\bailevel\s*(<=|>=|!=|==|=|<|>)\s*(-?\d+(?:\.\d+)?)""")
-    private val reverseComparison = Regex("""(?i)(-?\d+(?:\.\d+)?)\s*(<=|>=|!=|==|=|<|>)\s*ailevel\b""")
+    private val reverseComparison = Regex(
+        """(?i)(?<![a-z0-9_])(-?\d+(?:\.\d+)?)\s*(<=|>=|!=|==|=|<|>)\s*ailevel\b""",
+    )
     private val rangeComparison = Regex(
         """(?i)\bailevel\s*(?:=|==)\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*]""",
     )
