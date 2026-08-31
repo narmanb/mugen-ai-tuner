@@ -6,7 +6,6 @@ object MugenAiAnalyzer {
     private val varReferenceRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)""")
     private val assignedVarKeyRegex = Regex("""(?i)^var\s*\(\s*(\d+)\s*\)$""")
     private val directVarAssignmentRegex = Regex("""(?i)\bvar\s*\(\s*(\d+)\s*\)\s*:=\s*(.+)$""")
-    private val randomThresholdRegex = Regex("""(?i)\brandom\s*(?:<|<=|>|>=)\s*\d+""")
     private val commandTriggerNameRegex = Regex("""(?i)\bcommand\s*=\s*\"([^\"]+)\"""")
     private val legacyAiNameHintRegex = Regex(
         """(?i)(?:^(?:ai|cpu|computer)\d*$|(?:^|[_\-\s])(?:ai|cpu|computer)(?:\d+)?(?:$|[_\-\s]))""",
@@ -70,7 +69,7 @@ object MugenAiAnalyzer {
                 else -> Confidence.LOW
             }
 
-            val category = classifyBehavior(joined, block.section)
+            val category = AiBehaviorClassifier.classify(block.codeText, block.section)
             val firstRelevant = block.lines.firstOrNull {
                 val lower = it.code.lowercase()
                 "ailevel" in lower || varReferenceRegex.containsMatchIn(lower) || "command" in lower
@@ -118,6 +117,9 @@ object MugenAiAnalyzer {
             }
             if (aiDetected && responsiveness == DifficultyResponsiveness.NONE) {
                 add("AI was detected, but no analyzed behavior directly scales with the numeric AILevel. Engine difficulty may mainly act as an on/off switch for this character.")
+            }
+            if (distinctBehaviors.any { it.category == BehaviorCategory.UNKNOWN }) {
+                add("Some AI behavior is visible but semantically unclassified; those blocks are kept read-only rather than assigned a tuning category by guesswork.")
             }
             if (distinctBehaviors.any { it.confidence == Confidence.LOW || it.confidence == Confidence.UNKNOWN }) {
                 add("Some AI-related code is uncertain and should not be modified automatically.")
@@ -173,8 +175,6 @@ object MugenAiAnalyzer {
     private fun traceAiFlags(blocks: List<ParsedBlock>, aiCommandNames: Set<String>): List<AiFlag> {
         val flags = linkedMapOf<Int, AiFlag>()
 
-        // MUGEN's direct assignment operator is :=. Plain = is a comparison and must never seed
-        // an AI variable merely because AILevel appears on the same line.
         for (block in blocks) {
             for (line in block.lines) {
                 val assignment = directVarAssignmentRegex.find(line.code) ?: continue
@@ -193,8 +193,6 @@ object MugenAiAnalyzer {
             }
         }
 
-        // VarSet/VarAdd controllers directly gated by AI-positive AILevel logic or a traced legacy
-        // AI command. Human-only AILevel checks do not seed an AI flag.
         blocks.forEach { block ->
             val write = variableControllerTarget(block) ?: return@forEach
             val signalConfidence = AiLevelSignalClassifier.classifyCodeBlock(block.codeText)
@@ -220,7 +218,6 @@ object MugenAiAnalyzer {
             }
         }
 
-        // Follow simple dependency chains through both direct := assignments and VarSet/VarAdd.
         var changed: Boolean
         do {
             changed = false
@@ -369,14 +366,6 @@ object MugenAiAnalyzer {
         }
     }
 
-    /**
-     * Old WinMUGEN characters often activate AI by having the engine randomly satisfy commands a
-     * human could not reasonably enter. Names such as cpu1/cpu2 are common, but not guaranteed.
-     *
-     * We therefore require structural evidence before treating opaque command names as AI:
-     * a variable controller must be driven by several command definitions that themselves look
-     * deliberately impractical. This is much safer than declaring every long combo command AI.
-     */
     private fun findLegacyAiCommands(blocks: List<ParsedBlock>): Set<String> {
         data class CommandEvidence(
             val name: String,
@@ -457,19 +446,6 @@ object MugenAiAnalyzer {
         )
     }
 
-    private fun classifyBehavior(joined: String, section: String): BehaviorCategory = when {
-        "numproj" in joined || "projcontact" in joined || "projhit" in joined || "projguarded" in joined || "projectile" in joined -> BehaviorCategory.PROJECTILE_RESPONSE
-        "p2statetype" in joined && Regex("""(?i)p2statetype\s*=\s*a""").containsMatchIn(joined) -> BehaviorCategory.ANTI_AIR
-        "anti air" in joined || "anti-air" in joined -> BehaviorCategory.ANTI_AIR
-        "inguarddist" in joined || "guarddist" in joined || "guard" in section.lowercase() -> BehaviorCategory.DEFENSE
-        "movehit" in joined || "movecontact" in joined || "hitcount" in joined || "combo" in section.lowercase() -> BehaviorCategory.COMBO
-        "super" in section.lowercase() || "hyper" in section.lowercase() || Regex("""(?i)power\s*>=\s*[1-9]\d{2,}""").containsMatchIn(joined) -> BehaviorCategory.SUPER
-        "throw" in section.lowercase() || Regex("""(?i)attr\s*=.*\b[nsah]t\b""").containsMatchIn(joined) -> BehaviorCategory.THROW
-        "velset" in joined || "veladd" in joined || "posadd" in joined || "dash" in section.lowercase() || "jump" in section.lowercase() -> BehaviorCategory.MOVEMENT
-        "p2bodydist" in joined && ("changestate" in joined || randomThresholdRegex.containsMatchIn(joined)) -> BehaviorCategory.AGGRESSION
-        else -> BehaviorCategory.REACTION
-    }
-
     private fun summarize(category: BehaviorCategory, joined: String): String = when (category) {
         BehaviorCategory.DEFENSE -> if ("inguarddist" in joined) "AI defensive reaction while the opponent is within guarding distance." else "AI-controlled defensive behavior."
         BehaviorCategory.REACTION -> "AI-controlled decision or reaction behavior."
@@ -480,7 +456,7 @@ object MugenAiAnalyzer {
         BehaviorCategory.THROW -> "AI throw-related decision behavior."
         BehaviorCategory.SUPER -> "AI super/hyper or high-resource attack decision."
         BehaviorCategory.MOVEMENT -> "AI-controlled movement, positioning, dash, or jump behavior."
-        BehaviorCategory.UNKNOWN -> "AI-related behavior whose purpose could not be classified confidently."
+        BehaviorCategory.UNKNOWN -> "AI-related behavior whose purpose could not be classified confidently; it is kept read-only."
     }
 
     private fun responsiveness(
