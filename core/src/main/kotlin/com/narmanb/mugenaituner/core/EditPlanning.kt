@@ -73,10 +73,10 @@ object AiEditPlanner {
                 return@forEach
             }
 
-            if (AiLevelDifficultyScaling.hasNumericScaling(behavior.rawCode)) {
+            if (behavior.difficultyScaled || AiLevelDifficultyScaling.hasNumericScaling(behavior.rawCode)) {
                 // Already difficulty-scaled code needs a dedicated rewrite strategy so we do not
-                // accidentally apply scaling twice. Pure AI on/off gates such as AILevel >= 1 do
-                // not count here and therefore do not block otherwise safe probability tuning.
+                // accidentally apply scaling twice. This includes numeric AILevel routed through a
+                // traced var/fvar. Pure AI on/off gates still do not block fixed-probability tuning.
                 skipped++
                 return@forEach
             }
