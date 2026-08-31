@@ -73,6 +73,7 @@ data class AiConfigurationParameter(
     val lineNumber: Int,
     val originalExpression: String,
     val description: String,
+    val safeToEdit: Boolean = false,
 )
 
 data class CharacterAnalysis(
