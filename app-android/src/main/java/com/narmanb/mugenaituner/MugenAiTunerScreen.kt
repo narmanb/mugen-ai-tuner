@@ -67,6 +67,9 @@ internal fun MugenAiTunerScreen() {
     var baselineHistoryDepth by remember { mutableStateOf(0) }
     var baselineError by remember { mutableStateOf<String?>(null) }
     var selectedTreeUri by remember { mutableStateOf<Uri?>(null) }
+    var selectedActiveDefPath by remember { mutableStateOf<String?>(null) }
+    var pendingDefTreeUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingDefChoices by remember { mutableStateOf<List<String>>(emptyList()) }
     var matchingSnapshot by remember { mutableStateOf<StoredBackupSnapshot?>(null) }
     var loading by remember { mutableStateOf(false) }
     var applying by remember { mutableStateOf(false) }
@@ -77,8 +80,12 @@ internal fun MugenAiTunerScreen() {
     var engineDifficultyScaling by remember { mutableStateOf(false) }
     var behaviorSearch by remember { mutableStateOf("") }
 
-    suspend fun refreshFromDisk(uri: Uri, resetDifficulty: Boolean) {
-        val files = CharacterFolderReader.read(context, uri)
+    suspend fun refreshFromDisk(
+        uri: Uri,
+        resetDifficulty: Boolean,
+        activeDefPath: String?,
+    ) {
+        val files = CharacterFolderReader.read(context, uri, activeDefPath)
         if (files.isEmpty()) error("No supported MUGEN/IKEMEN text files were found in that folder.")
         val result = MugenAiAnalyzer.analyze(files)
         val fingerprint = CharacterFingerprinter.fingerprint(files)
@@ -104,6 +111,9 @@ internal fun MugenAiTunerScreen() {
         val baselineFiles = baseline?.files ?: files
 
         selectedTreeUri = uri
+        selectedActiveDefPath = activeDefPath ?: files.firstOrNull { it.path.endsWith(".def", ignoreCase = true) }?.path
+        pendingDefTreeUri = null
+        pendingDefChoices = emptyList()
         analyzedFiles = files
         analyzedFingerprint = fingerprint
         analysis = result
@@ -135,10 +145,19 @@ internal fun MugenAiTunerScreen() {
             error = null
             actionMessage = null
             analysis = null
+            selectedTreeUri = null
+            selectedActiveDefPath = null
+            pendingDefTreeUri = null
+            pendingDefChoices = emptyList()
             runCatching {
-                refreshFromDisk(uri, resetDifficulty = true)
+                refreshFromDisk(uri, resetDifficulty = true, activeDefPath = null)
             }.onFailure { throwable ->
-                error = throwable.message ?: "The character folder could not be analyzed."
+                if (throwable is AmbiguousCharacterDefException) {
+                    pendingDefTreeUri = uri
+                    pendingDefChoices = throwable.defPaths
+                } else {
+                    error = throwable.message ?: "The character folder could not be analyzed."
+                }
             }
             loading = false
         }
@@ -166,6 +185,44 @@ internal fun MugenAiTunerScreen() {
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(if (analysis == null) "Select character folder" else "Analyze another character")
+            }
+        }
+
+        if (pendingDefChoices.isNotEmpty()) {
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("Choose active character DEF", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "This folder contains alternate DEF files. Select the one IKEMEN/MUGEN actually loads so AI from dormant modes or patches is not mixed into the analysis.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        pendingDefChoices.forEach { defPath ->
+                            OutlinedButton(
+                                onClick = {
+                                    val uri = pendingDefTreeUri ?: return@OutlinedButton
+                                    scope.launch {
+                                        loading = true
+                                        error = null
+                                        runCatching {
+                                            refreshFromDisk(uri, resetDifficulty = true, activeDefPath = defPath)
+                                        }.onFailure { throwable ->
+                                            error = throwable.message ?: "The selected DEF could not be analyzed."
+                                        }
+                                        loading = false
+                                    }
+                                },
+                                enabled = !loading && !applying,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(defPath)
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -209,6 +266,9 @@ internal fun MugenAiTunerScreen() {
 
         analysis?.let { result ->
             item { AnalysisSummary(result) }
+            selectedActiveDefPath?.let { activeDef ->
+                item { Text("Active DEF: $activeDef", style = MaterialTheme.typography.bodySmall) }
+            }
             item { AiStrengthCard(AiStrengthEstimator.estimate(result)) }
             item { AnalyzerCompatibilityCard(AnalyzerCompatibilityEstimator.estimate(result)) }
             item { AiComparisonPicker(result) }
@@ -323,8 +383,9 @@ internal fun MugenAiTunerScreen() {
                                             )
                                         }.onSuccess { transaction ->
                                             actionMessage = "Applied ${transaction.appliedEditCount} classified AI edit(s) across ${transaction.changedFileCount} file(s). Backup: ${transaction.backupLocation}"
-                                            runCatching { refreshFromDisk(uri, resetDifficulty = false) }
-                                                .onFailure { error = it.message ?: "Edits were applied, but re-analysis failed." }
+                                            runCatching {
+                                                refreshFromDisk(uri, resetDifficulty = false, activeDefPath = selectedActiveDefPath)
+                                            }.onFailure { error = it.message ?: "Edits were applied, but re-analysis failed." }
                                         }.onFailure { throwable ->
                                             error = throwable.message ?: "The AI changes could not be applied."
                                         }
@@ -353,8 +414,9 @@ internal fun MugenAiTunerScreen() {
                                                 )
                                             }.onSuccess { restore ->
                                                 actionMessage = "Restored the verified original pre-tuner state across ${restore.changedFileCount} file(s), tracing ${restore.traversedBackupCount} backup snapshot(s). A safety backup was created at ${restore.backupLocation}."
-                                                runCatching { refreshFromDisk(uri, resetDifficulty = false) }
-                                                    .onFailure { error = it.message ?: "Original restore succeeded, but re-analysis failed." }
+                                                runCatching {
+                                                    refreshFromDisk(uri, resetDifficulty = false, activeDefPath = selectedActiveDefPath)
+                                                }.onFailure { error = it.message ?: "Original restore succeeded, but re-analysis failed." }
                                             }.onFailure { throwable ->
                                                 error = throwable.message ?: "The original pre-tuner state could not be restored."
                                             }
@@ -390,8 +452,9 @@ internal fun MugenAiTunerScreen() {
                                                 )
                                             }.onSuccess { restore ->
                                                 actionMessage = "Restored ${restore.changedFileCount} file(s) from snapshot ${restore.restoredSnapshotId}. A safety backup of the state you just left was also created."
-                                                runCatching { refreshFromDisk(uri, resetDifficulty = false) }
-                                                    .onFailure { error = it.message ?: "Restore succeeded, but re-analysis failed." }
+                                                runCatching {
+                                                    refreshFromDisk(uri, resetDifficulty = false, activeDefPath = selectedActiveDefPath)
+                                                }.onFailure { error = it.message ?: "Restore succeeded, but re-analysis failed." }
                                             }.onFailure { throwable ->
                                                 error = throwable.message ?: "The previous AI state could not be restored."
                                             }
