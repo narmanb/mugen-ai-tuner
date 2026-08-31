@@ -483,7 +483,7 @@ internal fun MugenAiTunerScreen() {
                 items(result.aiFlags) { flag ->
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(14.dp)) {
-                            Text("var(${flag.variable}) — ${flag.confidence}", style = MaterialTheme.typography.titleSmall)
+                            Text("${flag.expressionName} — ${flag.confidence}", style = MaterialTheme.typography.titleSmall)
                             Text(flag.reason, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
@@ -624,7 +624,7 @@ private fun DifficultyControls(
                         )
                         Slider(
                             value = value.toFloat(),
-                            onValueChange = { onCategoryChanged(category, it.toInt()) },
+                            onValueChange = { onCategoryChanged(category, value) },
                             valueRange = 0f..100f,
                             steps = 99,
                         )
